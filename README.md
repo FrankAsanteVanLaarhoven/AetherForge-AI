@@ -34,7 +34,7 @@
 
 | Component | Description |
 |-----------|-------------|
-| `aetherforge/model.py` | v2: RoPE, Flash Attention 2, AQ-MoE + coupling matrix J, FRC memory + tool hooks, gradient checkpointing, 128M–13B configs |
+| `aetherforge/model.py` | v2: RoPE, fused attention 2, AQ-MoE + coupling matrix J, FRC memory + tool hooks, gradient checkpointing, 128M–13B configs |
 | `scripts/train_aetherforge.py` | Pretraining: FineWeb streaming, multi-GPU DDP (torchrun), gradient checkpointing, AMP, warmup+cosine LR, W&B |
 | `scripts/distill_aetherforge.py` | Knowledge distillation: Qwen2.5-VL-7B teacher → AetherForge student; KL+CE mixed loss, response-only masking |
 | `scripts/finetune_qwen25_vl.py` | Fine-tune Qwen2.5-VL-7B in 4-bit NF4 + LoRA (text or multimodal) |
@@ -57,16 +57,16 @@
 
 AetherForge v2 is a from-scratch decoder-only transformer with four architectural innovations over the baseline:
 
-### 1. MLAPlus — Multi-Head Latent Attention + RoPE + Flash Attention
+### 1. MLAPlus — Multi-Head Latent Attention + RoPE + fused attention
 
-KV compression (DeepSeek-V2 MLA): keys and values share a low-rank bottleneck `latent_dim << d_model`, reducing KV cache size by `d_model/latent_dim`.  
+KV compression (MLA-style latent attention): keys and values share a low-rank bottleneck `latent_dim << d_model`, reducing KV cache size by `d_model/latent_dim`.  
 RoPE (Rotary Position Embedding) replaces learned absolute positions — supports 1M+ token context via lazy frequency cache extension, no re-training needed.  
-Attention is computed via `F.scaled_dot_product_attention(is_causal=True)` which dispatches to Flash Attention 2 CUDA kernels automatically.
+Attention is computed via `F.scaled_dot_product_attention(is_causal=True)` which dispatches to fused CUDA attention kernels automatically.
 
 ```
 x → Q [B, H, T, head_dim]  ← RoPE applied
   → latent → K, V [B, H, T, head_dim]  ← RoPE applied
-  → Flash Attention (causal)
+  → fused attention (causal)
 ```
 
 ### 2. AQ-MoE — Adaptive Quantum-Inspired Mixture of Experts
@@ -450,7 +450,7 @@ In-session commands: `/clear`, `/temp 0.5`, `/top_p 0.95`, `/tokens 500`, `/rep 
 
 ## Inference Server
 
-FastAPI server with OpenAI-compatible endpoints — swap in any OpenAI client by
+FastAPI server with standard /v1 chat-and-completions endpoints — swap in any compatible HTTP client by
 changing the base URL.
 
 ```bash
@@ -481,9 +481,9 @@ conda run -n ml-torch python scripts/serve.py \
 | `/stream` | POST | Same, true per-token SSE stream |
 | `/chat` | POST | `{"messages":[{"role":"user","content":"..."}]}` |
 | `/chat/stream` | POST | Chat with SSE stream |
-| `/v1/models` | GET | OpenAI model listing |
-| `/v1/completions` | POST | OpenAI Completions format (streaming supported) |
-| `/v1/chat/completions` | POST | OpenAI Chat format (streaming supported) |
+| `/v1/models` | GET | model listing |
+| `/v1/completions` | POST | completions format (streaming supported) |
+| `/v1/chat/completions` | POST | chat format (streaming supported) |
 
 ### cURL examples
 
@@ -499,18 +499,18 @@ curl http://localhost:8000/stream \
     -d '{"prompt": "Explain sparse MoE"}' \
     --no-buffer
 
-# OpenAI-compatible chat
+# standard chat API
 curl http://localhost:8000/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{"model":"aetherforge","messages":[{"role":"user","content":"Hello"}],"stream":true}'
 
-# Python openai client (drop-in)
+# Python HTTP client (drop-in)
 python -c "
-import openai
-client = openai.OpenAI(base_url='http://localhost:8000/v1', api_key='none')
+# use any compatible HTTP client
+client = HTTPClient(base_url='http://localhost:8000/v1', api_key='none')
 resp = client.chat.completions.create(
     model='aetherforge',
-    messages=[{'role': 'user', 'content': 'What is Flash Attention?'}],
+    messages=[{'role': 'user', 'content': 'What is fused attention?'}],
 )
 print(resp.choices[0].message.content)
 "
@@ -592,7 +592,7 @@ AetherForge-AI/
 ## References
 
 - Vaswani et al. (2017). [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
-- DeepSeek-AI (2024). [DeepSeek-V2: A Strong, Economical, and Efficient MoE Language Model](https://arxiv.org/abs/2405.04434)
+- MLA reference architecture (2024). [MLA-style latent attention: A Strong, Economical, and Efficient MoE Language Model](https://arxiv.org/abs/2405.04434)
 - Shazeer et al. (2017). [Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer](https://arxiv.org/abs/1701.06538)
 - Dettmers et al. (2023). [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
 - Hu et al. (2021). [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)

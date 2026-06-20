@@ -111,7 +111,7 @@ class MLAPlus(nn.Module):
     """
     Multi-Head Latent Attention Plus.
 
-    KV compression (DeepSeek-V2 MLA): K, V are projected through a shared
+    KV compression (MLA-style latent attention): K, V are projected through a shared
     low-rank latent bottleneck (latent_dim << d_model), reducing KV cache
     by d_model/latent_dim.  Queries are full-rank.
 
