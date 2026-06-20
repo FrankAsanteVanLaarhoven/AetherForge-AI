@@ -1,0 +1,768 @@
+ENV := conda run -n ml-torch
+
+# ── Quick checks ──────────────────────────────────────────────────────────
+.PHONY: test-aetherforge test-finetune test-eval help
+
+test-aetherforge:
+	$(ENV) python aetherforge/model.py
+
+test-finetune:
+	$(ENV) python scripts/finetune_qwen25_vl.py --mode text --test-run
+
+test-eval:
+	$(ENV) python scripts/evaluate_model.py --benchmark text
+
+test-all: test-aetherforge test-finetune test-eval
+	@echo "\nAll smoke-tests passed."
+
+# ── Data ──────────────────────────────────────────────────────────────────
+.PHONY: data data-multimodal diagram
+
+data:
+	$(ENV) python scripts/generate_synthetic_data.py 2>/dev/null || \
+	$(ENV) python multimodal_example/generate_dummy_data.py
+
+data-multimodal:
+	$(ENV) python multimodal_example/generate_dummy_data.py
+
+diagram:
+	$(ENV) python scripts/generate_architecture_diagram.py
+
+# ── AetherForge pretraining ───────────────────────────────────────────────
+.PHONY: train-aetherforge train-aetherforge-test
+
+train-aetherforge:
+	$(ENV) python scripts/train_aetherforge.py \
+		--data data/synthetic_data.jsonl \
+		--steps 2000 --batch-size 4 --seq-len 256 --warmup-steps 100
+
+train-aetherforge-gc:
+	$(ENV) python scripts/train_aetherforge.py \
+		--stream --config 1B --gradient-checkpointing --8bit-adam \
+		--steps 15000 --seq-len 256 --batch-size 1
+
+train-fineweb:
+	$(ENV) python scripts/train_aetherforge.py \
+		--stream --config 128M \
+		--steps 10000 --seq-len 256
+
+train-fineweb-ddp:
+	torchrun --nproc_per_node=$(or $(NGPU),2) scripts/train_aetherforge.py \
+		--stream --config 1B --gradient-checkpointing \
+		--steps 50000 --seq-len 512
+
+train-aetherforge-test:
+	$(ENV) python scripts/train_aetherforge.py --test-run
+
+# ── Qwen2.5-VL fine-tuning ────────────────────────────────────────────────
+.PHONY: finetune finetune-multimodal finetune-test
+
+finetune:
+	$(ENV) python scripts/finetune_qwen25_vl.py \
+		--mode text --data data/synthetic_data.jsonl
+
+finetune-multimodal:
+	$(ENV) python scripts/finetune_qwen25_vl.py \
+		--mode multimodal \
+		--data multimodal_example/multimodal_data.jsonl
+
+finetune-test:
+	$(ENV) python scripts/finetune_qwen25_vl.py --mode text --test-run
+
+# ── Inference ─────────────────────────────────────────────────────────────
+.PHONY: infer infer-4bit
+
+infer:
+	$(ENV) python scripts/inference_qwen25_vl.py --interactive
+
+infer-4bit:
+	$(ENV) python scripts/run_4bit.py --interactive
+
+# ── Evaluation ────────────────────────────────────────────────────────────
+.PHONY: eval eval-vision eval-all eval-checkpoints
+
+eval:
+	$(ENV) python scripts/evaluate_model.py --benchmark text
+
+eval-checkpoints:
+	$(ENV) python scripts/eval_checkpoints.py \
+		--n-chunks 300 --n-alpaca 100 --output outputs/eval_results
+
+eval-vision:
+	$(ENV) python scripts/evaluate_model.py \
+		--benchmark all \
+		--image-dir multimodal_example/images
+
+eval-lora:
+	$(ENV) python scripts/evaluate_model.py \
+		--lora-path outputs/qwen25_vl_lora/final \
+		--benchmark all \
+		--image-dir multimodal_example/images
+
+eval-compare:
+	$(ENV) python scripts/evaluate_model.py \
+		--lora-path outputs/qwen25_vl_lora/final \
+		--benchmark all \
+		--image-dir multimodal_example/images \
+		--compare-base
+
+# ── LoRA merge ────────────────────────────────────────────────────────────
+.PHONY: merge-lora serve serve-qwen distill distill-test
+
+merge-lora:
+	$(ENV) python scripts/merge_lora.py \
+		--lora-path outputs/qwen25_vl_lora/final \
+		--output-dir outputs/qwen25_vl_merged
+
+# ── Code agent ────────────────────────────────────────────────────────────
+.PHONY: data-code data-agent-only finetune-code-agent agent-loop \
+        finetune-qwen-code-agent finetune-qwen-code-agent-test \
+        finetune-qwen-code-agent-agent-only \
+        agent-loop-qwen agent-loop-qwen-benchmark \
+        eval-code-agent eval-code-agent-compare eval-code-agent-best-of-n
+
+data-code:
+	$(ENV) python scripts/generate_code_data.py --n-code 5000 --n-react 1500
+	$(ENV) python scripts/generate_execution_traces.py
+	cat data/execution_traces.jsonl >> data/code_agent_data.jsonl
+
+data-agent-only:
+	$(ENV) python scripts/generate_code_data.py --agent-only --n-react 2000
+	$(ENV) python scripts/generate_execution_traces.py
+
+finetune-code-agent:
+	$(ENV) python scripts/finetune_code_agent.py \
+		--checkpoint outputs/aetherforge_distill_5k/final/model.pt \
+		--config     outputs/aetherforge_distill_5k/final/config.json \
+		--data       data/code_agent_data.jsonl \
+		--steps 3000 --lr 2e-5 --batch-size 1 --grad-accum 16 --max-length 256
+
+finetune-1B-code-agent:
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+	$(ENV) python scripts/finetune_code_agent.py \
+		--checkpoint outputs/aetherforge_1B_bpe/init/model.pt \
+		--config     outputs/aetherforge_1B_bpe/init/config.json \
+		--data       data/code_agent_data.jsonl \
+		--output     outputs/aetherforge_1B_code_agent \
+		--steps 5000 --lr 3e-5 --batch-size 1 --grad-accum 8 \
+		--max-length 256 --warmup-steps 200 \
+		--8bit-adam --gradient-checkpointing --amp
+
+adapt-tokenizer-1B:
+	$(ENV) python scripts/adapt_tokenizer.py \
+		--checkpoint outputs/aetherforge_1B_pretrain/final/model.pt \
+		--config     1B \
+		--output     outputs/aetherforge_1B_bpe/init
+
+agent-loop:
+	$(ENV) python scripts/agent_loop.py \
+		--checkpoint outputs/aetherforge_1B_code_agent/final/model.pt \
+		--config     outputs/aetherforge_1B_bpe/init/config.json \
+		--interactive
+
+agent-benchmark:
+	$(ENV) python scripts/agent_loop.py \
+		--checkpoint outputs/aetherforge_1B_code_agent/final/model.pt \
+		--config     outputs/aetherforge_1B_bpe/init/config.json \
+		--benchmark
+
+# ── Fast path: Qwen2.5-0.5B-Instruct + LoRA code-agent ───────────────────
+finetune-qwen-code-agent-test:
+	$(ENV) python scripts/finetune_qwen_code_agent.py --test-run
+
+finetune-qwen-code-agent-test-agent-only:
+	$(ENV) python scripts/finetune_qwen_code_agent.py --test-run \
+		--agent-only --agent-contract strict
+
+finetune-qwen-code-agent:
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--steps 3000 --lr 2e-4 \
+		--batch-size 2 --grad-accum 8 --max-length 1024
+
+finetune-qwen-code-agent-agent-only:
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--steps 3000 --lr 2e-4 \
+		--batch-size 2 --grad-accum 8 --max-length 1024 \
+		--agent-only --agent-contract strict
+
+finetune-qwen-code-agent-wandb:
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--steps 3000 --lr 2e-4 \
+		--batch-size 2 --grad-accum 8 --max-length 1024 --wandb
+
+agent-loop-qwen:
+	$(ENV) python scripts/agent_loop.py \
+		--hf-model outputs/qwen_code_agent/final \
+		--interactive
+
+agent-loop-qwen-benchmark:
+	$(ENV) python scripts/agent_loop.py \
+		--hf-model outputs/qwen_code_agent/final \
+		--benchmark
+
+# Single-pass evaluation (16-task benchmark)
+eval-code-agent:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model outputs/qwen_code_agent/final \
+		--mode single \
+		--output outputs/eval_code_agent
+
+# Best-of-3 evaluation
+eval-code-agent-best-of-n:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model outputs/qwen_code_agent/final \
+		--mode best_of_n --n 3 \
+		--output outputs/eval_code_agent
+
+# Full comparison: base Qwen vs fine-tuned, single vs best-of-3
+eval-code-agent-compare:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model outputs/qwen_code_agent/final \
+		--mode compare --n 3 \
+		--compare-base \
+		--output outputs/eval_code_agent
+
+# ── Qwen2.5-Coder-1.5B base model evaluation (no LoRA) ───────────────────
+# Run before fine-tuning 1.5B. Compare against 0.5B strict baseline first.
+eval-coder-1b5-base:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--mode single \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--output outputs/eval_coder_1b5_base
+
+eval-coder-1b5-base-compare:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--mode compare --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--output outputs/eval_coder_1b5_base
+
+# ── Offline vector memory ────────────────────────────────────────────────────
+.PHONY: memory-extract memory-build memory-audit memory-retrieve \
+        memory-build-full memory-validate \
+        eval-base-only eval-lora-only eval-memory-only \
+        eval-lora-memory eval-lora-memory-best-of-3 \
+        test-memory test-extract
+
+# Extract verified records from eval outputs → memory/raw/extracted_memories.jsonl
+memory-extract:
+	$(ENV) python scripts/extract_memory_from_evals.py \
+		--outputs-dir outputs \
+		--out memory/raw/extracted_memories.jsonl \
+		--max-records 500
+
+# Build the memory index from memory/raw/*.jsonl
+memory-build:
+	$(ENV) python scripts/build_vector_memory.py \
+		--raw-dir memory/raw \
+		--index-dir memory/index
+
+# Dry-run: validate records only, do not write index
+memory-validate:
+	$(ENV) python scripts/build_vector_memory.py \
+		--raw-dir memory/raw --dry-run
+
+# Audit raw records + index consistency
+memory-audit:
+	$(ENV) python scripts/audit_memory.py \
+		--raw-dir memory/raw \
+		--index-dir memory/index
+
+# Quick retrieval test from CLI
+memory-retrieve:
+	$(ENV) python scripts/retrieve_memory.py \
+		--query "word_count frequency dict case-insensitive" \
+		--top-k 3 --format text
+
+# Full pipeline: extract → audit → build
+memory-build-full: memory-extract memory-audit memory-build
+
+# Run the memory test suite
+test-memory:
+	$(ENV) python -m pytest tests/test_vector_memory.py -v
+
+# Run the extraction test suite
+test-extract:
+	$(ENV) python -m pytest tests/test_extract_memory.py -v
+
+# Run all memory tests
+test-memory-all:
+	$(ENV) python -m pytest tests/test_vector_memory.py tests/test_extract_memory.py -v
+
+# ── Evaluation modes: base / LoRA / memory / combined ─────────────────────
+# Uses Qwen2.5-Coder-1.5B-Instruct with verified_agent strict scoring.
+LORA_PATH := outputs/qwen15b_memory_300steps/final
+MEM_INDEX := memory/index
+
+eval-base-only:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--output outputs/eval_base_only
+
+eval-lora-only:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--output outputs/eval_lora_only
+
+eval-memory-only:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_memory_only
+
+eval-lora-memory:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_lora_memory
+
+eval-lora-memory-best-of-3:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--mode best_of_n --n 3 --scoring-mode verified_agent \
+		--agent-contract strict \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_lora_memory_bon3
+
+# ── Held-out and recovery-stress evaluation ────────────────────────────────
+.PHONY: eval-heldout-base eval-heldout-memory \
+        eval-heldout-lora-memory-single eval-heldout-lora-memory-best3 \
+        eval-recovery-stress-base eval-recovery-stress-memory \
+        eval-recovery-stress-lora-memory-single eval-recovery-stress-lora-memory-best3
+
+HELDOUT_FILE  := data/heldout_code_agent_tasks.jsonl
+RECOVERY_FILE := data/recovery_stress_tasks.jsonl
+
+eval-heldout-base:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--tasks-file $(HELDOUT_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output outputs/eval_heldout_base
+
+eval-heldout-memory:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--tasks-file $(HELDOUT_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_heldout_memory
+
+eval-heldout-lora-memory-single:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--tasks-file $(HELDOUT_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_heldout_lora_memory
+
+eval-heldout-lora-memory-best3:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--tasks-file $(HELDOUT_FILE) \
+		--mode best_of_n --n 3 --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_heldout_lora_memory_bon3
+
+eval-recovery-stress-base:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--tasks-file $(RECOVERY_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output outputs/eval_recovery_base
+
+eval-recovery-stress-memory:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--tasks-file $(RECOVERY_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_recovery_memory
+
+eval-recovery-stress-lora-memory-single:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--tasks-file $(RECOVERY_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_recovery_lora_memory
+
+eval-recovery-stress-lora-memory-best3:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--tasks-file $(RECOVERY_FILE) \
+		--mode best_of_n --n 3 --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_recovery_lora_memory_bon3
+
+# ── Memory-augmented training ──────────────────────────────────────────────
+.PHONY: train-memory-smoke train-memory-25pilot eval-memory-25pilot train-memory-300
+
+MEMORY_PILOT_OUT := outputs/qwen15b_memory_25pilot
+MEMORY_SMOKE_OUT := outputs/qwen15b_memory_smoke
+
+train-memory-smoke:
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--test-run \
+		--steps 5 \
+		--lr 6e-6 \
+		--batch-size 1 \
+		--grad-accum 16 \
+		--max-length 1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index $(MEM_INDEX) \
+		--memory-top-k 4 \
+		--output-dir $(MEMORY_SMOKE_OUT)
+
+train-memory-25pilot:
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--steps 25 \
+		--lr 6e-6 \
+		--batch-size 1 \
+		--grad-accum 16 \
+		--max-length 1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index $(MEM_INDEX) \
+		--memory-top-k 4 \
+		--output-dir $(MEMORY_PILOT_OUT)
+
+eval-memory-25pilot:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(MEMORY_PILOT_OUT)/final \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_memory_25pilot
+
+train-memory-300:
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--steps 300 \
+		--lr 6e-6 \
+		--batch-size 1 \
+		--grad-accum 16 \
+		--max-length 1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index $(MEM_INDEX) \
+		--memory-top-k 4 \
+		--output-dir outputs/qwen15b_memory_300
+
+# ── Targeted development set (5 persistent frozen held-out failure categories) ─
+# Scientific hygiene:
+#   - Tasks in data/targeted_failure_dev_tasks.jsonl are similar-but-not-identical
+#     to frozen held-out tasks — they are NOT copies.
+#   - Train a targeted pilot on the dev-set traces; re-evaluate on the frozen
+#     held-out benchmark with the ORIGINAL 82-record memory index only.
+#   - The adapted-memory result (82.1%) is a separate experiment; do not mix them.
+.PHONY: test-targeted-dev-tasks eval-targeted-dev-base eval-targeted-dev-memory \
+        eval-targeted-dev-lora-memory generate-targeted-dev-traces
+
+TARGETED_DEV_FILE := data/targeted_failure_dev_tasks.jsonl
+TARGETED_DEV_OUT  := outputs/qwen15b_targeted_failure_dev_150steps
+
+test-targeted-dev-tasks:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest \
+		tests/test_targeted_failure_dev_tasks.py -v
+
+eval-targeted-dev-base:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--tasks-file $(TARGETED_DEV_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output outputs/eval_targeted_dev_base
+
+eval-targeted-dev-memory:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model Qwen/Qwen2.5-Coder-1.5B-Instruct \
+		--tasks-file $(TARGETED_DEV_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_targeted_dev_memory
+
+eval-targeted-dev-lora-memory:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--tasks-file $(TARGETED_DEV_FILE) \
+		--mode single --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_targeted_dev_lora_memory
+
+generate-targeted-dev-traces:
+	$(ENV) python scripts/generate_code_data.py --dev-set-only
+	@echo "Generated dev-set failure→fix traces: data/dev_set_data.jsonl"
+	@echo "Next: make train-targeted-failure-pilot"
+
+# ── Targeted failure pilot training (150 steps from existing LoRA checkpoint) ──
+.PHONY: train-targeted-failure-pilot eval-frozen-heldout-after-targeted
+
+train-targeted-failure-pilot: generate-targeted-dev-traces
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model $(LORA_PATH) \
+		--training-file data/dev_set_data.jsonl \
+		--steps 150 \
+		--lr 3e-6 \
+		--batch-size 1 \
+		--grad-accum 16 \
+		--max-length 1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index $(MEM_INDEX) \
+		--memory-top-k 4 \
+		--output-dir $(TARGETED_DEV_OUT)
+
+eval-frozen-heldout-after-targeted:
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(TARGETED_DEV_OUT)/final \
+		--tasks-file $(HELDOUT_FILE) \
+		--mode best_of_n --n 3 --scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output outputs/eval_frozen_heldout_after_targeted_dev_150steps \
+		--verbose
+
+# ── Option A: merge 300-step LoRA → train one fresh adapter ──────────────
+# Goal: beat 75.0% frozen held-out without LoRA-on-LoRA stacking.
+# Always use memory/index (clean baseline), never memory/index_adapted.
+# Result: rejected — 64.3% vs 75.0% baseline (negative experiment).
+
+OPTION_A_BASE    := outputs/qwen15b_merged_base
+OPTION_A_OUT     := outputs/qwen15b_fresh_blended_350
+OPTION_A_EVAL    := outputs/eval_frozen_heldout_option_a_350
+BLENDED_DATA     := data/dev_set_blended.jsonl
+
+.PHONY: merge-option-a-lora build-option-a-blended-data train-fresh-blended \
+        eval-frozen-heldout-option-a summarise-option-a
+
+# Step 1: merge champion LoRA into a plain HF model
+merge-option-a-lora:
+	$(ENV) python scripts/merge_lora.py \
+		--lora-path $(LORA_PATH) \
+		--output-dir $(OPTION_A_BASE) \
+		--dtype bfloat16
+	@echo "Merged model saved to $(OPTION_A_BASE). Verify it loads before training."
+
+# Step 2: build blended training file (general + targeted traces)
+build-option-a-blended-data:
+	$(ENV) python scripts/build_option_a_blended_data.py \
+		--general-file data/agent_only_data.jsonl \
+		--targeted-file data/dev_set_failing_5.jsonl \
+		--fallback-targeted data/dev_set_data.jsonl \
+		--output $(BLENDED_DATA)
+	wc -l $(BLENDED_DATA)
+
+# Step 3: train ONE fresh LoRA from the merged model (no LoRA-on-LoRA)
+train-fresh-blended:
+	@test -d $(OPTION_A_BASE) || (echo "ERROR: $(OPTION_A_BASE) not found. Run make merge-option-a-lora first." && exit 1)
+	@test -s $(BLENDED_DATA)  || (echo "ERROR: $(BLENDED_DATA) empty/missing. Run make build-option-a-blended-data first." && exit 1)
+	mkdir -p outputs/option_a_logs
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model $(OPTION_A_BASE) \
+		--training-file $(BLENDED_DATA) \
+		--steps 350 \
+		--lr 5e-6 \
+		--batch-size 1 \
+		--grad-accum 16 \
+		--max-length 1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index $(MEM_INDEX) \
+		--memory-top-k 4 \
+		--output-dir $(OPTION_A_OUT) \
+		2>&1 | tee outputs/option_a_logs/train_fresh_blended_350.log
+
+# Step 4: evaluate on clean frozen held-out using original memory/index only
+eval-frozen-heldout-option-a:
+	@test -d $(OPTION_A_OUT)/final || (echo "ERROR: $(OPTION_A_OUT)/final not found. Run make train-fresh-blended first." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(OPTION_A_OUT)/final \
+		--tasks-file data/heldout_code_agent_tasks.jsonl \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output $(OPTION_A_EVAL) \
+		--verbose
+
+# Step 5: compare Option A against the 75.0% clean baseline
+summarise-option-a:
+	$(ENV) python scripts/summarise_option_a.py \
+		--baseline outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv \
+		--option-a $(OPTION_A_EVAL)/best_of_3.csv
+
+# ── SWE-bench Lite evaluations ────────────────────────────────────────────
+# Phase 1: stub format validation.
+# Phase 2: real repo-level patch generation.
+# Official Docker harness required for verified scores.
+# See docs/SWEBENCH_LITE_PLAN.md and docs/SWEBENCH_PHASE2_PLAN.md
+.PHONY: eval-swebench-lite-smoke eval-swebench-lite-stub \
+        eval-swebench-lite-patchgen-one inspect-swebench-lite-prediction
+
+eval-swebench-lite-smoke:
+	$(ENV) python scripts/eval_swebench_lite_smoke.py \
+		--model $(LORA_PATH) \
+		--limit 3 \
+		--output-dir outputs/swebench_lite_smoke
+	@echo "Patch generation only; official harness evaluation still required."
+	@echo "See docs/SWEBENCH_LITE_PLAN.md"
+
+# Phase 2 stub check — no cloning, no model, validates script and output format.
+eval-swebench-lite-stub:
+	$(ENV) python scripts/eval_swebench_lite_patchgen.py \
+		--limit 1 \
+		--stub-only \
+		--output-dir outputs/swebench_lite_phase2_stub
+	@echo "Stub check complete. See outputs/swebench_lite_phase2_stub/"
+
+# Phase 2 real run — clone repo, run agent with repo tools, produce patch.
+eval-swebench-lite-patchgen-one:
+	$(ENV) python scripts/eval_swebench_lite_patchgen.py \
+		--limit 1 \
+		--model $(LORA_PATH) \
+		--memory-enabled \
+		--memory-index $(MEM_INDEX) \
+		--output-dir outputs/swebench_lite_phase2
+	@echo "Patch generation only; official harness evaluation still required."
+	@echo "See docs/SWEBENCH_PHASE2_PLAN.md"
+
+# Inspect the most recent Phase 2 prediction.
+inspect-swebench-lite-prediction:
+	$(ENV) python scripts/inspect_swebench_prediction.py
+
+# ── Distillation ──────────────────────────────────────────────────────────
+distill-test:
+	$(ENV) python scripts/distill_aetherforge.py --test-run
+
+distill:
+	$(ENV) python scripts/distill_aetherforge.py \
+		--config 128M \
+		--temperature 3.0 \
+		--alpha 0.7 \
+		--steps 5000
+
+# ── Inference server ──────────────────────────────────────────────────────
+.PHONY: serve serve-qwen serve-1b chat chat-qwen chat-server
+
+serve:
+	$(ENV) python scripts/serve.py \
+		--model aetherforge \
+		--checkpoint outputs/aetherforge_pretrain/final/model.pt \
+		--config 128M
+
+serve-1b:
+	$(ENV) python scripts/serve.py \
+		--model aetherforge \
+		--checkpoint outputs/aetherforge_pretrain/final/model.pt \
+		--config 1B-8k
+
+serve-qwen:
+	$(ENV) python scripts/serve.py \
+		--model qwen \
+		--lora-path outputs/qwen25_vl_lora/final
+
+# ── Interactive chat ──────────────────────────────────────────────────────
+chat:
+	$(ENV) python scripts/chat.py \
+		--checkpoint outputs/aetherforge_pretrain/final/model.pt \
+		--config 128M
+
+chat-qwen:
+	$(ENV) python scripts/chat.py --model qwen
+
+chat-server:
+	$(ENV) python scripts/chat.py --server http://localhost:8000
+
+# ── Environment ───────────────────────────────────────────────────────────
+.PHONY: env-create env-update
+
+env-create:
+	conda env create -f environment.yml
+
+env-update:
+	conda env update -f environment.yml --prune
+
+# ── Help ──────────────────────────────────────────────────────────────────
+help:
+	@echo ""
+	@echo "AetherForge Makefile"
+	@echo "========================================================"
+	@echo "  make test-all                         Run all smoke-tests"
+	@echo "  make data                             Generate synthetic training data"
+	@echo "  make data-code                        Generate code-agent training data (~13k)"
+	@echo ""
+	@echo "  make train-aetherforge                Pretrain 128M AetherForge (JSONL)"
+	@echo "  make train-aetherforge-gc             Pretrain 1B with gradient checkpointing"
+	@echo "  make train-fineweb                    Stream FineWeb -> AetherForge 128M"
+	@echo "  make train-fineweb-ddp                DDP FineWeb (NGPU=4 make train-fineweb-ddp)"
+	@echo ""
+	@echo "  make finetune                         Fine-tune Qwen2.5-VL-7B (text)"
+	@echo "  make finetune-multimodal              Fine-tune Qwen2.5-VL-7B (vision)"
+	@echo ""
+	@echo "  make finetune-qwen-code-agent-test    Smoke-test (Qwen2.5-0.5B LoRA, 25 steps)"
+	@echo "  make finetune-qwen-code-agent         Full LoRA fine-tune Qwen2.5-0.5B"
+	@echo "  make finetune-qwen-code-agent-wandb   Same + W&B logging"
+	@echo "  make agent-loop-qwen                  Interactive agent (fine-tuned)"
+	@echo "  make agent-loop-qwen-benchmark        5-task agent benchmark"
+	@echo ""
+	@echo "  make eval-code-agent                  Evaluate code agent (single-pass)"
+	@echo "  make eval-code-agent-best-of-n        Evaluate with Best-of-3"
+	@echo "  make eval-code-agent-compare          Base vs fine-tuned vs best-of-3"
+	@echo ""
+	@echo "  make distill-test                     Distillation smoke-test (25 steps)"
+	@echo "  make distill                          Full distillation run (5000 steps)"
+	@echo "  make diagram                          Regenerate docs/architecture.png"
+	@echo "  make merge-lora                       Merge LoRA weights into base model"
+	@echo ""
+	@echo "  make serve                            FastAPI server -- AetherForge 128M :8000"
+	@echo "  make serve-1b                         FastAPI server -- AetherForge 1B-8k :8000"
+	@echo "  make serve-qwen                       FastAPI server -- Qwen2.5-VL + LoRA :8000"
+	@echo "  make chat                             Interactive chat -- AetherForge (GPU)"
+	@echo "  make chat-qwen                        Interactive chat -- Qwen2.5-VL (GPU)"
+	@echo "  make infer                            Interactive Qwen2.5-VL inference"
+	@echo "  make infer-4bit                       Interactive Llama-3.1-8B 4-bit inference"
+	@echo "  make env-create                       Create conda env from environment.yml"
+	@echo ""
