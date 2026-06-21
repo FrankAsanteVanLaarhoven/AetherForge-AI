@@ -875,6 +875,182 @@ summarise-v27-preservation:
 	@echo "Per-task CSV: $(V27_OUT_DIR)/per_task_comparison.csv"
 	@echo "Failure diff: $(V27_OUT_DIR)/failure_diff.md"
 
+# ── v2.8 Champion System Enhancement ─────────────────────────────────────
+# Goal: improve 82.1% (23/28) merged champion + memory system without retraining.
+# Promotion rule: >= 24/28 = new champion; == 23/28 = tie; < 23/28 = reject.
+#
+# Current best: outputs/qwen15b_v27_champion_merged + memory/index_adapted
+# Failing 5: group_anagrams, merge_intervals, count_islands,
+#             median_two_sorted, tree_depth_tuple
+#
+# Run order:
+#   1. make eval-v28-current-champion       (reproduce 23/28 baseline)
+#   2. make eval-v28-no-memory              (control: memory lift)
+#   3. make eval-v28-memory-topk1           |
+#      make eval-v28-memory-topk3           | top-k ablation
+#      make eval-v28-memory-topk5           |
+#   4. make eval-v28-filtered-memory        (curated hard/medium-only index)
+#   5. make eval-v28-direct-answer-prompt   (DIRECT_ANSWER_SYSTEM prompt)
+#   6. make eval-v28-continuation-logic     (best-of-5 on 5 failing tasks)
+#   7. make summarise-v28
+
+V28_CHAMPION  := outputs/qwen15b_v27_champion_merged
+V28_MEM_INDEX := memory/index_adapted
+V28_HELDOUT   := data/heldout_code_agent_tasks.jsonl
+V28_OUT_DIR   := results/v28_champion_system
+
+.PHONY: eval-v28-current-champion \
+        eval-v28-no-memory \
+        eval-v28-memory-topk1 \
+        eval-v28-memory-topk3 \
+        eval-v28-memory-topk5 \
+        eval-v28-filtered-memory \
+        eval-v28-direct-answer-prompt \
+        eval-v28-continuation-logic \
+        summarise-v28
+
+# Baseline: reproduce the 23/28 merged champion + memory result.
+eval-v28-current-champion:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v28_current_champion \
+		--verbose
+
+# Control: merged champion WITHOUT memory.
+eval-v28-no-memory:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output         outputs/eval_v28_no_memory \
+		--verbose
+
+# top-k ablation: 1, 3, 5 retrieved examples.
+eval-v28-memory-topk1:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   1 \
+		--output         outputs/eval_v28_memory_topk1 \
+		--verbose
+
+eval-v28-memory-topk3:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   3 \
+		--output         outputs/eval_v28_memory_topk3 \
+		--verbose
+
+eval-v28-memory-topk5:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   5 \
+		--output         outputs/eval_v28_memory_topk5 \
+		--verbose
+
+# Filtered memory: curated hard/medium-only index (see configs/v28_memory_retrieval.yaml).
+# Build index before running: python scripts/build_vector_memory.py
+#   --raw-dir memory/raw_adapted --index-dir memory/index_v28_filtered
+eval-v28-filtered-memory:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	@test -d memory/index_v28_filtered || \
+		(echo "ERROR: memory/index_v28_filtered not found — build the filtered index first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index memory/index_v28_filtered \
+		--memory-top-k   4 \
+		--output         outputs/eval_v28_filtered_memory \
+		--verbose
+
+# Direct-answer prompt: uses DIRECT_ANSWER_SYSTEM instead of STRICT_SYSTEM.
+eval-v28-direct-answer-prompt:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   4 \
+		--prompt-variant direct_answer \
+		--output         outputs/eval_v28_direct_answer_prompt \
+		--verbose
+
+# Continuation logic: best-of-5 sampling focused on the 5 failing tasks.
+# Tests whether increased sampling resolves the capability gap.
+eval-v28-continuation-logic:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--task-ids      group_anagrams merge_intervals count_islands \
+		                median_two_sorted tree_depth_tuple \
+		--mode          best_of_n --n 5 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v28_continuation_logic \
+		--verbose
+
+# Produce the v2.8 enhancement report.
+summarise-v28:
+	mkdir -p $(V28_OUT_DIR)
+	$(ENV) python scripts/summarise_v28_champion_system.py \
+		--output-dir $(V28_OUT_DIR)
+	@echo ""
+	@echo "Summary : $(V28_OUT_DIR)/summary.md"
+	@echo "Per-task: $(V28_OUT_DIR)/per_task_comparison.csv"
+	@echo "Failures: $(V28_OUT_DIR)/failure_analysis.md"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.

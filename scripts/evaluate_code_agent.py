@@ -1146,6 +1146,10 @@ def main():
     ap.add_argument("--verbose",      action="store_true")
     ap.add_argument("--list-tasks",   action="store_true",
                     help="Print task list and exit (no model needed)")
+    ap.add_argument("--prompt-variant", default="default",
+                    choices=["default", "direct_answer"],
+                    help="System prompt variant: 'default' uses the contract, "
+                         "'direct_answer' uses a more concise direct-code prompt.")
     args = ap.parse_args()
 
     # Resolve task source: external file or built-in benchmark
@@ -1185,11 +1189,14 @@ def main():
           f"(mode={args.mode}, n={args.n}, scoring={args.scoring_mode}, "
           f"contract={args.agent_contract}{sap_tag})")
 
-    # Resolve system prompt for the chosen contract
+    # Resolve system prompt: contract takes effect first, then variant overrides.
     eval_system_prompt: Optional[str] = None
     if args.agent_contract == "strict":
         from scripts.agent_loop import STRICT_SYSTEM as _STRICT_SYS
         eval_system_prompt = _STRICT_SYS
+    if args.prompt_variant == "direct_answer":
+        from scripts.agent_loop import DIRECT_ANSWER_SYSTEM as _DIRECT_SYS
+        eval_system_prompt = _DIRECT_SYS
 
     # ── Memory loading ─────────────────────────────────────────────────────
     memory_state = None
