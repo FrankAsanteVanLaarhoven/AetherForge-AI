@@ -17,3 +17,9 @@ numpy
 tqdm
 datasets
 scipy
+sentence-transformers>=3.0.0
+safetensors
+trl>=1.0.0
+evaluate
+wandb
+tensorboard
