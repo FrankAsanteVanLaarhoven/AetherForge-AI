@@ -715,6 +715,166 @@ summarise-v26:
 	@echo "  champion (v0.1): 21/28 = 75.0%"
 	@echo "  v2.5 (100% traces): 15/28 = 53.6%  [rejected]"
 
+# ── v2.7 Champion Preservation Audit ─────────────────────────────────────
+# Goal: find why the 75.0% champion is not preserved by merge-and-retrain.
+# DO NOT train a new model in this milestone — audit only.
+#
+# Champion: outputs/qwen15b_memory_300steps/final (300-step LoRA, Qwen2.5-Coder-1.5B)
+# Known results:
+#   Champion 300-step LoRA + memory : 21/28 = 75.0%
+#   v2.6 traces000                  : 16/28 = 57.1%
+#   v2.6 traces010                  : 14/28 = 50.0%
+#   v2.6 traces025                  : 15/28 = 53.6%
+#
+# Run order:
+#   1. make eval-v27-champion-adapter       (does the champion still reproduce 75.0%?)
+#   2. make merge-v27-champion              (create merged standalone model)
+#   3. make eval-v27-merged-champion        (does merge_and_unload damage the model?)
+#   4. make eval-v27-champion-no-memory     (how much does memory contribute?)
+#   5. make summarise-v27-preservation      (produces the audit report)
+#
+# Optional environment cross-checks:
+#   make eval-v27-champion-adapter-mltorch      (ml-torch env)
+#   make eval-v27-champion-adapter-aetherforge  (aetherforge-train env, same as default)
+
+V27_CHAMPION_LORA   := outputs/qwen15b_memory_300steps/final
+V27_CHAMPION_MERGED := outputs/qwen15b_v27_champion_merged
+V27_HELDOUT         := data/heldout_code_agent_tasks.jsonl
+V27_OUT_DIR         := results/v27_champion_preservation
+
+.PHONY: eval-v27-champion-adapter \
+        eval-v27-champion-adapter-mltorch \
+        eval-v27-champion-adapter-aetherforge \
+        merge-v27-champion \
+        eval-v27-merged-champion \
+        eval-v27-champion-no-memory \
+        eval-v27-champion-original-memory \
+        summarise-v27-preservation
+
+# Control 1: original champion adapter (unmerged), best-of-3, with memory/index.
+# This is the canonical re-evaluation.  Expected: 21/28 = 75.0%.
+eval-v27-champion-adapter:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_adapter \
+		--verbose
+
+# Control 2a: same adapter, forced ml-torch environment.
+# Tests whether env/CUDA/PyTorch version changes the result.
+eval-v27-champion-adapter-mltorch:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	conda run -n ml-torch python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_adapter_mltorch \
+		--verbose
+
+# Control 2b: same adapter, explicit aetherforge-train environment.
+eval-v27-champion-adapter-aetherforge:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	conda run -n aetherforge-train python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_adapter_aetherforge \
+		--verbose
+
+# Control 3: merge champion LoRA into a standalone HF model (no retraining).
+# If eval-v27-merged-champion matches the adapter result, merge is safe.
+# If it drops, the root cause is merge precision / tokenizer / config drift.
+merge-v27-champion:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/merge_lora.py \
+		--lora-path  $(V27_CHAMPION_LORA) \
+		--output-dir $(V27_CHAMPION_MERGED) \
+		--dtype      bfloat16
+	@echo "Merged model saved to $(V27_CHAMPION_MERGED). Verify it loads before eval."
+
+# Control 4: evaluate merged champion WITHOUT retraining.
+# Uses the same eval settings as the champion adapter run.
+eval-v27-merged-champion:
+	@test -d $(V27_CHAMPION_MERGED) || \
+		(echo "ERROR: $(V27_CHAMPION_MERGED) not found — run make merge-v27-champion first." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_MERGED) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_merged_champion \
+		--verbose
+
+# Control 5: champion adapter WITH MEMORY DISABLED.
+# If this drops significantly below 75.0%, the 75.0% result is
+# a model+memory system result, not pure adapter generalisation.
+eval-v27-champion-no-memory:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output         outputs/eval_v27_champion_no_memory \
+		--verbose
+
+# Control 6: champion adapter with original memory/index (explicit).
+# Same as eval-v27-champion-adapter but named to show the index is the
+# original clean index, not memory/index_adapted.
+eval-v27-champion-original-memory:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index memory/index \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_original_memory \
+		--verbose
+
+# Produce the preservation report from all available eval CSVs.
+# Safe to run at any point — missing CSVs are reported as "not yet evaluated".
+summarise-v27-preservation:
+	mkdir -p $(V27_OUT_DIR)
+	$(ENV) python scripts/summarise_v27_preservation.py \
+		--champion-csv        outputs/eval_v27_champion_adapter/best_of_3.csv \
+		--mltorch-csv         outputs/eval_v27_champion_adapter_mltorch/best_of_3.csv \
+		--aetherforge-csv     outputs/eval_v27_champion_adapter_aetherforge/best_of_3.csv \
+		--merged-csv          outputs/eval_v27_merged_champion/best_of_3.csv \
+		--no-memory-csv       outputs/eval_v27_champion_no_memory/best_of_3.csv \
+		--original-memory-csv outputs/eval_v27_champion_original_memory/best_of_3.csv \
+		--output-dir          $(V27_OUT_DIR)
+	@echo ""
+	@echo "Audit report: $(V27_OUT_DIR)/summary.md"
+	@echo "Per-task CSV: $(V27_OUT_DIR)/per_task_comparison.csv"
+	@echo "Failure diff: $(V27_OUT_DIR)/failure_diff.md"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
