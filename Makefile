@@ -706,10 +706,8 @@ summarise-v26:
 	@for pct in 000 010 025 050 100; do \
 	  csv=outputs/eval_frozen_heldout_v26_traces$${pct}pct/best_of_3.csv; \
 	  if [ -f "$$csv" ]; then \
-	    pass=$$(tail -n +2 "$$csv" | awk -F',' '$$NF=="true"||$$NF=="1"||$$NF=="True"{c++} END{print c+0}'); \
-	    total=$$(tail -n +2 "$$csv" | wc -l | tr -d ' '); \
-	    pct_score=$$(echo "scale=1; $$pass * 100 / $$total" | bc); \
-	    echo "  traces $${pct}%:  $$pass/$$total = $${pct_score}%"; \
+	    result=$$($(ENV) python -c "import csv; rows=list(csv.DictReader(open('$$csv'))); p=sum(1 for r in rows if r.get('passed','').strip() in ('True','true','1')); print(f'{p}/{len(rows)}={p*100//len(rows)}%')"); \
+	    echo "  traces $${pct}%:  $$result"; \
 	  else \
 	    echo "  traces $${pct}%:  not yet evaluated"; \
 	  fi; \
