@@ -634,6 +634,66 @@ summarise-option-a:
 		--baseline outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv \
 		--option-a $(OPTION_A_EVAL)/best_of_3.csv
 
+# ── v2.5 Clean Foundation: merged base + 4-category blended LoRA ─────────
+# Addresses Option A (64.3%) failure: adds execution traces and raises LR.
+# Trains ONE fresh LoRA from the merged base. No LoRA-on-LoRA.
+# Success condition: match or beat 75.0% frozen held-out; preserve 82.1%
+# adapted-memory result. Use memory/index only (never memory/index_adapted).
+
+V25_BASE     := outputs/qwen15b_merged_base
+V25_OUT      := outputs/qwen15b_v25_fresh_blended_300
+V25_EVAL     := outputs/eval_frozen_heldout_v25
+V25_BLEND    := data/v25_blended.jsonl
+V25_BASELINE := outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv
+
+.PHONY: build-v25-blended-data train-v25-fresh-blended \
+        eval-frozen-heldout-v25 summarise-v25
+
+build-v25-blended-data:
+	$(ENV) python scripts/build_v25_blended_data.py \
+		--general-file   data/agent_only_data.jsonl \
+		--traces-file    data/execution_traces.jsonl \
+		--failure-file   data/dev_set_data.jsonl \
+		--memory-records memory/index/records.jsonl \
+		--output         $(V25_BLEND)
+	wc -l $(V25_BLEND)
+
+train-v25-fresh-blended:
+	@test -d $(V25_BASE) || (echo "ERROR: $(V25_BASE) not found. Run make merge-option-a-lora first." && exit 1)
+	@test -s $(V25_BLEND)  || (echo "ERROR: $(V25_BLEND) empty/missing. Run make build-v25-blended-data first." && exit 1)
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model      $(V25_BASE) \
+		--training-file $(V25_BLEND) \
+		--steps         300 \
+		--lr            2e-5 \
+		--batch-size    1 \
+		--grad-accum    16 \
+		--max-length    1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index  $(MEM_INDEX) \
+		--memory-top-k  4 \
+		--output-dir    $(V25_OUT)
+
+eval-frozen-heldout-v25:
+	@test -d $(V25_OUT)/final || (echo "ERROR: $(V25_OUT)/final not found. Run make train-v25-fresh-blended first." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V25_OUT)/final \
+		--tasks-file    data/heldout_code_agent_tasks.jsonl \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output        $(V25_EVAL) \
+		--verbose
+
+summarise-v25:
+	$(ENV) python scripts/summarise_option_a.py \
+		--baseline $(V25_BASELINE) \
+		--option-a $(V25_EVAL)/best_of_3.csv
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
