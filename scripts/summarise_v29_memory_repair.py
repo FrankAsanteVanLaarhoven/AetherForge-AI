@@ -37,6 +37,11 @@ PROMOTION_THRESHOLD  = 24
 
 REPAIR_TARGETS = ["merge_intervals", "median_two_sorted", "deep_get", "tree_depth_tuple"]
 
+# tree_depth_tuple has a broken assertion in the original task prompt:
+# it claims ==3 for a case that correctly computes to 4.
+# We report raw scores (task as-is) and corrected audit scores (task excluded).
+SPEC_CONFLICTED_TASKS = {"tree_depth_tuple"}
+
 TREE_DEPTH_NOTE = (
     "tree_depth_tuple has a broken assertion in the original task description: "
     "the prompt claims tree_depth(((1,2),(3,(4,5))))==3 but the correct value "
@@ -79,6 +84,12 @@ def build_summary(
     diag_pct  = 100.0 * diag_pass / diag_n if diag_n else 0.0
     diag_map  = _task_pass_map(diagnostic_rows)
 
+    # Corrected audit: exclude spec-conflicted tasks
+    diag_rows_corrected = [r for r in diagnostic_rows if r.get("task_id") not in SPEC_CONFLICTED_TASKS]
+    diag_n_corr   = len(diag_rows_corrected)
+    diag_pass_corr = _pass_count(diag_rows_corrected)
+    diag_pct_corr  = 100.0 * diag_pass_corr / diag_n_corr if diag_n_corr else 0.0
+
     clean_n    = len(clean_rows)
     clean_pass = _pass_count(clean_rows)
     clean_pct  = 100.0 * clean_pass / clean_n if clean_n else 0.0
@@ -101,7 +112,14 @@ def build_summary(
         lines.append("_No results yet — run `make eval-v29-repair-memory-diagnostic`_\n")
     else:
         lines += [
-            f"Score: **{diag_pass}/{diag_n} = {diag_pct:.1f}%** (diagnostic label only)",
+            f"Raw frozen score: **{diag_pass}/{diag_n} = {diag_pct:.1f}%** (diagnostic label only)",
+        ]
+        if diag_n_corr < diag_n:
+            lines += [
+                f"Corrected audit score: **{diag_pass_corr}/{diag_n_corr} = {diag_pct_corr:.1f}%** "
+                f"(excludes spec-conflicted tasks: {', '.join(SPEC_CONFLICTED_TASKS)})",
+            ]
+        lines += [
             "",
             "⚠️  This run uses the same frozen 28-task benchmark AND adds task-specific",
             "repair records for the 4 failing tasks. It is NOT a clean result.",
