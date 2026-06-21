@@ -634,6 +634,89 @@ summarise-option-a:
 		--baseline outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv \
 		--option-a $(OPTION_A_EVAL)/best_of_3.csv
 
+# ── v2.6 Data Mixture and Trace-Gating Audit ─────────────────────────────
+# Ablation: find the optimal execution-trace fraction in the blended dataset.
+# v2.5 used 100% of traces (57% of blend) and regressed to 53.6%.
+# Hard tasks improved (+24pp) but string/basic collapsed (-50pp, -100pp).
+# This ablation tests 0%, 10%, 25%, 50%, 100% trace fractions.
+# Base pool: 2000 general + 200 failure + 82 memory = 2282 fixed examples.
+# All runs start from outputs/qwen15b_merged_base (no LoRA-on-LoRA).
+# Evaluate each on frozen held-out. Promote only if >= 75.0%.
+
+V26_BASE     := outputs/qwen15b_merged_base
+V26_BASELINE := outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv
+
+.PHONY: build-v26-blends \
+        train-v26-traces000 train-v26-traces010 train-v26-traces025 \
+        train-v26-traces050 train-v26-traces100 \
+        eval-v26-traces000 eval-v26-traces010 eval-v26-traces025 \
+        eval-v26-traces050 eval-v26-traces100 \
+        summarise-v26
+
+build-v26-blends:
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.00
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.10
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.25
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.50
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 1.00
+	@echo "All 5 blends written to data/v26_blend_traces*.jsonl"
+	wc -l data/v26_blend_traces*.jsonl
+
+define V26_TRAIN_RULE
+train-v26-traces$(1):
+	@test -d $(V26_BASE) || (echo "ERROR: $(V26_BASE) missing — run make merge-option-a-lora" && exit 1)
+	@test -s data/v26_blend_traces$(1)pct.jsonl || (echo "ERROR: data/v26_blend_traces$(1)pct.jsonl missing — run make build-v26-blends" && exit 1)
+	$$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model      $(V26_BASE) \
+		--training-file data/v26_blend_traces$(1)pct.jsonl \
+		--steps         300 \
+		--lr            2e-5 \
+		--batch-size    1 \
+		--grad-accum    16 \
+		--max-length    1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index  $(MEM_INDEX) \
+		--memory-top-k  4 \
+		--output-dir    outputs/qwen15b_v26_traces$(1)pct_300
+
+eval-v26-traces$(1):
+	@test -d outputs/qwen15b_v26_traces$(1)pct_300/final || (echo "ERROR: train traces$(1) first" && exit 1)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      outputs/qwen15b_v26_traces$(1)pct_300/final \
+		--tasks-file    data/heldout_code_agent_tasks.jsonl \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output        outputs/eval_frozen_heldout_v26_traces$(1)pct \
+		--verbose
+endef
+
+$(eval $(call V26_TRAIN_RULE,000))
+$(eval $(call V26_TRAIN_RULE,010))
+$(eval $(call V26_TRAIN_RULE,025))
+$(eval $(call V26_TRAIN_RULE,050))
+$(eval $(call V26_TRAIN_RULE,100))
+
+summarise-v26:
+	@echo "=== v2.6 Trace-Gating Ablation Results ==="
+	@for pct in 000 010 025 050 100; do \
+	  csv=outputs/eval_frozen_heldout_v26_traces$${pct}pct/best_of_3.csv; \
+	  if [ -f "$$csv" ]; then \
+	    pass=$$(tail -n +2 "$$csv" | awk -F',' '$$NF=="true"||$$NF=="1"||$$NF=="True"{c++} END{print c+0}'); \
+	    total=$$(tail -n +2 "$$csv" | wc -l | tr -d ' '); \
+	    pct_score=$$(echo "scale=1; $$pass * 100 / $$total" | bc); \
+	    echo "  traces $${pct}%:  $$pass/$$total = $${pct_score}%"; \
+	  else \
+	    echo "  traces $${pct}%:  not yet evaluated"; \
+	  fi; \
+	done
+	@echo "  champion (v0.1): 21/28 = 75.0%"
+	@echo "  v2.5 (100% traces): 15/28 = 53.6%  [rejected]"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
