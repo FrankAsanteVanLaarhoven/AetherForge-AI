@@ -1051,6 +1051,119 @@ summarise-v28:
 	@echo "Per-task: $(V28_OUT_DIR)/per_task_comparison.csv"
 	@echo "Failures: $(V28_OUT_DIR)/failure_analysis.md"
 
+# ── v2.9 Memory Repair Split ──────────────────────────────────────────────
+# Architecture:
+#   Champion index  : memory/index_adapted          (99 records, PROTECTED)
+#   Repair raw      : memory/raw_v29_repair          (4 new verified records)
+#   Repair index    : memory/index_v29_repair        (champion + repair, 103 records)
+#   Diagnostic eval : same 28-task benchmark + repair index  (NOT a clean result)
+#   Clean eval      : data/v29_clean_generalisation_tasks.jsonl + repair index
+#
+# Promotion rule:
+#   Diagnostic score (any) on original benchmark  → DIAGNOSTIC label only
+#   Clean generalisation score                     → valid generalisation claim
+#   New 28-task champion                           → requires merging repair records
+#                                                    into index_adapted AND fresh eval
+#
+# tree_depth_tuple note: the task prompt has a broken assertion
+#   (claims ==3 for a case where the correct answer is 4).
+#   Repair record uses the correct value. Eval results for that task may vary.
+
+.PHONY: inspect-v29-retrieval build-v29-repair-memory \
+        eval-v29-repair-memory-diagnostic eval-v29-clean-memory-generalisation \
+        summarise-v29
+
+V29_CHAMPION  := outputs/qwen15b_v27_champion_merged
+V29_MEM_INDEX := memory/index_adapted
+V29_REPAIR_RAW  := memory/raw_v29_repair
+V29_REPAIR_IDX  := memory/index_v29_repair
+V29_HELDOUT   := data/heldout_code_agent_tasks.jsonl
+V29_CLEAN_SET := data/v29_clean_generalisation_tasks.jsonl
+V29_OUT_DIR   := results/v29_memory_repair
+
+# ── inspect-v29-retrieval ─────────────────────────────────────────────────
+# Show k=4 hits for the 4 failing tasks from both champion and repair indexes.
+# Writes results/v29_memory_repair/retrieval_inspection.md
+inspect-v29-retrieval: $(V29_REPAIR_RAW)/repair_records.jsonl
+	@test -d $(V29_MEM_INDEX) || (echo "ERROR: champion index not found at $(V29_MEM_INDEX)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/inspect_v29_retrieval.py \
+		--champion-index $(V29_MEM_INDEX) \
+		--repair-raw-dir $(V29_REPAIR_RAW) \
+		--repair-index   $(V29_REPAIR_IDX) \
+		--output-md      $(V29_OUT_DIR)/retrieval_inspection.md \
+		--top-k 4
+	@echo "Inspection: $(V29_OUT_DIR)/retrieval_inspection.md"
+
+# ── build-v29-repair-memory ───────────────────────────────────────────────
+# Validate repair records and build memory/index_v29_repair
+# (champion records + 4 repair examples, champion index untouched)
+build-v29-repair-memory: $(V29_REPAIR_RAW)/repair_records.jsonl
+	$(ENV) python scripts/inspect_v29_retrieval.py \
+		--champion-index $(V29_MEM_INDEX) \
+		--repair-raw-dir $(V29_REPAIR_RAW) \
+		--repair-index   $(V29_REPAIR_IDX) \
+		--output-md      $(V29_OUT_DIR)/retrieval_inspection.md \
+		--rebuild-repair-index \
+		--top-k 4
+	@echo "Repair index: $(V29_REPAIR_IDX)"
+	@echo "Inspection  : $(V29_OUT_DIR)/retrieval_inspection.md"
+
+# ── eval-v29-repair-memory-diagnostic ────────────────────────────────────
+# Evaluate merged champion + repair index on the original 28-task benchmark.
+# DIAGNOSTIC LABEL: adds task-specific repair records for known failing tasks.
+# Score on this run is NOT a clean champion promotion.
+eval-v29-repair-memory-diagnostic: build-v29-repair-memory
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_HELDOUT)  || (echo "ERROR: heldout tasks not found at $(V29_HELDOUT)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_HELDOUT) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_REPAIR_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_repair_memory_diagnostic \
+		--verbose
+	@echo "DIAGNOSTIC — score on original 28-task benchmark with repair records added."
+	@echo "NOT a clean champion promotion. See $(V29_OUT_DIR)/claim_boundary.md"
+
+# ── eval-v29-clean-memory-generalisation ─────────────────────────────────
+# Evaluate merged champion + repair index on the clean generalisation set.
+# These 5 tasks are similar to the 4 failing tasks but have different names
+# and examples — never seen during training or memory repair.
+eval-v29-clean-memory-generalisation: build-v29-repair-memory
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_CLEAN_SET) || (echo "ERROR: clean task set not found at $(V29_CLEAN_SET)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_CLEAN_SET) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_REPAIR_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_clean_generalisation \
+		--verbose
+	@echo "CLEAN — score on separate untouched test set. Valid generalisation claim."
+
+# ── summarise-v29 ─────────────────────────────────────────────────────────
+summarise-v29:
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/summarise_v29_memory_repair.py \
+		--diagnostic-csv $(V29_OUT_DIR)/diagnostic_repair_results.csv \
+		--clean-csv      $(V29_OUT_DIR)/clean_generalisation_results.csv \
+		--output-dir     $(V29_OUT_DIR)
+	@echo "Summary      : $(V29_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V29_OUT_DIR)/claim_boundary.md"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
