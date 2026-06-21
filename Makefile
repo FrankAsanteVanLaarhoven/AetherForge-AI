@@ -1,4 +1,4 @@
-ENV := conda run -n ml-torch
+ENV ?= conda run -n aetherforge-train
 
 # ── Quick checks ──────────────────────────────────────────────────────────
 .PHONY: test-aetherforge test-finetune test-eval help
