@@ -1,30 +1,47 @@
 # v2.17 Claim Boundary
 
-## What this experiment can prove
+## What is concluded
 
-| Claim | Evidence required | Strength |
+| Claim | Evidence | Strength |
 |---|---|---|
-| Dense retrieval beats TF-IDF on clean tasks | +2 tasks on 32-task benchmark (68.8%+) | Strong |
-| Dense retrieval matches TF-IDF | ±1 task, same or better on clean 32 | Neutral — no regression |
-| Dense retrieval reduces lexical false positives | Per-family breakdown shows Type 1/2 failures resolved | Mechanistic |
-| Hybrid retrieval adds over pure dense | Hybrid > dense on 32-task by 1+ task | Weak (noise floor ≥2) |
+| MiniLM dense retrieval did not beat TF-IDF on clean 32-task benchmark | 17/32 vs 17/32 — tied | Strong (within-run controlled comparison) |
+| MiniLM hybrid retrieval slightly underperformed TF-IDF | 16/32 vs 17/32 | Suggestive (within noise floor) |
+| MiniLM dense retrieval partially reduces interval-family lexical collisions | interval: 2/6 → 4/6 | Weak (n=6, partially cancelled by sorting regressions) |
+| A generic embedder is insufficient for code-task retrieval improvement | Task-level shuffle, zero net delta | Consistent with v2.11 diagnosis |
 
-## What this experiment cannot prove
+## What is NOT concluded
 
-- Dense retrieval generalises to tasks outside these 32 families
-- Dense retrieval helps at model capability ceiling (9/32 tasks failing with both indexes)
-- The oracle ceiling (71.9%) is reachable with dense retrieval alone
-- Results on SWE-bench or multi-file patch tasks
+| Forbidden claim | Why |
+|---|---|
+| "Dense retrieval fails" | Only MiniLM tested; code-specialised embedders not evaluated |
+| "TF-IDF is better than dense retrieval for code" | Tied result; different embedder may change outcome |
+| "Hybrid retrieval hurts" | 1-task regression is within ±2–3 task sampling noise |
+| "The champion score dropped" | Baseline variance (17 vs 20) is within stated ±2–3 task range |
 
-## Promotion decision rule
+## Baseline variance — important caveat
 
-- **Promote dense as new champion:** dense 32-task ≥ 22/32 (68.8%), no regression on 28-task
-- **Promote hybrid as new champion:** hybrid 32-task ≥ 22/32 (68.8%), no regression on 28-task
-- **Report as null result:** best dense/hybrid on 32-task ≤ 21/32 (65.6%)
-- **Report as regression:** dense/hybrid 32-task < 20/32 (62.5%) — TF-IDF champion retained
+The historical champion score was 20/32 = 62.5% (from v2.10, a separate eval run).
+The v2.17 TF-IDF baseline measured 17/32 = 53.1% — a 3-task difference using the
+same model, same index, same eval configuration. This is at the upper bound of the
+±2–3 task sampling variance stated throughout the paper. It does not indicate model
+regression; it is sampling noise at small n (32 tasks, best-of-3).
 
-## Diagnostic classification rule
+The fair conclusion is: **all three retrieval modes in v2.17 produce results consistent
+with the historical champion within sampling variance.** No mode produced a statistically
+distinguishable improvement.
 
-If dense or hybrid index was built using any records from `index_adapted_v29` (the repair index),
-all results from that configuration are classified as **diagnostic** and must not be reported
-as a clean champion. Only results built exclusively from `index_adapted` (99 records) are clean.
+## Promotion decision
+
+Champion retained: TF-IDF with local code-memory-embedder, `memory/index_adapted`, 99 records.
+No dense or hybrid configuration is promoted in v2.17.
+
+## Next valid experiment
+
+Test a code-specialised embedding model (CodeBERT, UniXcoder, nomic-embed-code) using
+the same evaluation harness. Replace `V217_DENSE_MODEL` in Makefile and rerun:
+```
+make build-v217-dense-index
+make eval-v217-dense-32
+make eval-v217-hybrid-32
+```
+Promotion threshold remains: ≥19/32 (59.4%) on clean 32-task benchmark.

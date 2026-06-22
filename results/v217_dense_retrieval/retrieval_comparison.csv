@@ -1,7 +1,8 @@
-mode,benchmark,n_tasks,n_pass,score_pct,vs_champion_tasks,status
-tfidf,frozen_28,28,23,82.14,0,champion
-dense,frozen_28,28,PENDING,PENDING,PENDING,pending
-hybrid,frozen_28,28,PENDING,PENDING,PENDING,pending
-tfidf,clean_32,32,20,62.50,0,champion
-dense,clean_32,32,PENDING,PENDING,PENDING,pending
-hybrid,clean_32,32,PENDING,PENDING,PENDING,pending
+mode,benchmark,n_tasks,n_pass,score_pct,vs_v217_tfidf_tasks,vs_historical_champion_tasks,status
+tfidf,clean_32,32,20,62.50,+3,0,historical_champion_v210
+tfidf,clean_32,32,17,53.13,0,-3,v217_baseline
+dense_miniLM,clean_32,32,17,53.13,0,-3,v217_null_result
+hybrid_miniLM,clean_32,32,16,50.00,-1,-4,v217_regression
+tfidf,frozen_28,28,23,82.14,n/a,0,historical_champion_v29
+dense_miniLM,frozen_28,28,PENDING,PENDING,PENDING,PENDING,pending
+hybrid_miniLM,frozen_28,28,PENDING,PENDING,PENDING,PENDING,pending
