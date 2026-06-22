@@ -1,553 +1,252 @@
 <p align="center">
-  <img src="docs/splash.jpg" width="100%" alt="AetherForge Training Dashboard">
+  <img src="docs/splash.jpg" width="100%" alt="AetherForge-AI">
 </p>
 
-<h1 align="center">AetherForge AI</h1>
+<h1 align="center">AetherForge-AI</h1>
 
 <p align="center">
-  <strong>A hybrid latent-entangled transformer + efficient fine-tuning toolkit</strong><br>
-  Designed for consumer GPUs (RTX 4080 16GB and up)
-</p>
-
-<p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#architecture-aetherforge">Architecture</a> •
-  <a href="#pretraining--multi-gpu">Pretraining</a> •
-  <a href="#knowledge-distillation">Distillation</a> •
-  <a href="#qwen25-vl-7b-fine-tuning">Qwen2.5-VL</a> •
-  <a href="#training-dashboard">Dashboard</a> •
-  <a href="#inference">Inference</a>
+  <strong>Memory-augmented local code-agent research</strong><br>
+  A forensic investigation into what helps, what fails, and why.
 </p>
 
 <p align="center">
-  <a href="https://github.com/FrankAsanteVanLaarhoven/AetherForge-AI/releases/tag/v0.1.0"><img src="https://img.shields.io/badge/version-0.1.0-E3B341?style=flat-square" alt="v0.1.0"></a>
+  <a href="https://github.com/FrankAsanteVanLaarhoven/AetherForge-AI/releases"><img src="https://img.shields.io/badge/version-2.13-E3B341?style=flat-square" alt="v2.13"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python" alt="Python"></a>
   <a href="https://pytorch.org"><img src="https://img.shields.io/badge/PyTorch-2.6-EE4C2C?style=flat-square&logo=pytorch" alt="PyTorch"></a>
-  <a href="https://developer.nvidia.com/cuda-toolkit"><img src="https://img.shields.io/badge/CUDA-12.4-76B900?style=flat-square&logo=nvidia" alt="CUDA"></a>
-  <a href="https://huggingface.co"><img src="https://img.shields.io/badge/🤗-Transformers-FFD21E?style=flat-square" alt="HuggingFace"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License"></a>
 </p>
 
 ---
 
-## What's Inside
+## What This Project Is
 
-| Component | Description |
-|-----------|-------------|
-| `aetherforge/model.py` | v2: RoPE, fused attention 2, AQ-MoE + coupling matrix J, FRC memory + tool hooks, gradient checkpointing, 128M–13B configs |
-| `scripts/train_aetherforge.py` | Pretraining: FineWeb streaming, multi-GPU DDP (torchrun), gradient checkpointing, AMP, warmup+cosine LR, W&B |
-| `scripts/distill_aetherforge.py` | Knowledge distillation: Qwen2.5-VL-7B teacher → AetherForge student; KL+CE mixed loss, response-only masking |
-| `scripts/finetune_qwen25_vl.py` | Fine-tune Qwen2.5-VL-7B in 4-bit NF4 + LoRA (text or multimodal) |
-| `scripts/serve.py` | FastAPI inference server: `/generate`, `/stream` (SSE), `/chat` — AetherForge or Qwen backend |
-| `scripts/evaluate_model.py` | Text + vision benchmarks, perplexity, base vs. LoRA delta table |
-| `scripts/merge_lora.py` | Merge LoRA adapter into base weights for standalone export |
-| `scripts/inference_qwen25_vl.py` | Qwen2.5-VL text and vision inference with optional LoRA loading |
-| `Training_Dashboard.ipynb` | 13-panel enterprise monitoring: KPIs, loss curves, heatmaps, correlation matrix, multi-run overlay |
-| `docs/manuscript.md` | Full technical paper with LaTeX equations, evaluation tables, honest roadmap |
-| `docs/model_card.md` | HF-style model card: architecture, training recipes, hardware budgets, citation |
+AetherForge-AI is a local memory-augmented code-agent research project built on a
+fine-tuned Qwen2.5-Coder-1.5B-Instruct model with an offline verified vector memory.
+The system runs entirely on a single consumer GPU (RTX 4080 Super, 16 GB VRAM) with no
+external API dependencies.
 
----
+The project investigates a specific question: **can verified memory retrieval improve a
+small locally fine-tuned code-agent, and can targeted repairs or routing strategies
+improve it further?**
 
-## Architecture: AetherForge
-
-<p align="center">
-  <img src="docs/architecture.png" width="100%" alt="AetherForge v2 Architecture Diagram">
-</p>
-
-
-AetherForge v2 is a from-scratch decoder-only transformer with four architectural innovations over the baseline:
-
-### 1. MLAPlus — Multi-Head Latent Attention + RoPE + fused attention
-
-KV compression (MLA-style latent attention): keys and values share a low-rank bottleneck `latent_dim << d_model`, reducing KV cache size by `d_model/latent_dim`.  
-RoPE (Rotary Position Embedding) replaces learned absolute positions — supports 1M+ token context via lazy frequency cache extension, no re-training needed.  
-Attention is computed via `F.scaled_dot_product_attention(is_causal=True)` which dispatches to fused CUDA attention kernels automatically.
-
-```
-x → Q [B, H, T, head_dim]  ← RoPE applied
-  → latent → K, V [B, H, T, head_dim]  ← RoPE applied
-  → fused attention (causal)
-```
-
-### 2. AQ-MoE — Adaptive Quantum-Inspired Mixture of Experts
-
-Top-K routing with a learned E×E coupling matrix **J** capturing expert-to-expert correlations.  
-Coupled router: `s_coupled = s + η · (s @ J)` — standard routing when J=0 at init, progressively learned.  
-Load-balance loss `L_balance = E · Σ(f_i · P_i)` is added to the training objective (weight `--balance-alpha`).
-
-```
-s = router(x)                          # [N, E] standard scores
-s_coupled = s + η * (s @ J)            # [N, E] with expert coupling
-top-k dispatch → weighted expert sum
-```
-
-### 3. ForgeReasoningCore v2 — Memory Buffer + Tool Hooks
-
-Gated iterative refinement (v1) plus:
-- **Memory buffer**: 64 learned (key, value) slot pairs; each step reads via soft attention with a per-step gate init near zero.
-- **Tool hooks**: `model.blocks[i].frc.register_tool(step, fn)` — call any Python function mid-reasoning (retrieval, calculator, code execution, structured extraction).
-
-```python
-# Register a retrieval tool on block 0, step 1
-model.blocks[0].frc.register_tool(1, retrieval_fn)
-```
-
-### 4. Production Size Configs
-
-```python
-from aetherforge.model import MODEL_CONFIGS, AetherForge
-
-# Instantiate by name
-model = AetherForge.from_config("7B")
-
-# Available presets
-MODEL_CONFIGS = {
-    "128M": dict(d_model=512,  n_layers=6,  n_heads=8,  n_experts=8,  ...),  # 1.45 GB VRAM
-    "1B":   dict(d_model=2048, n_layers=24, n_heads=16, n_experts=16, ...),
-    "7B":   dict(d_model=4096, n_layers=32, n_heads=32, n_experts=64, ...),
-    "13B":  dict(d_model=5120, n_layers=40, n_heads=40, n_experts=64, ...),
-}
-```
-
-Train with a preset:
-```bash
-python scripts/train_aetherforge.py --config 1B --tokenizer Qwen/Qwen2.5-VL-7B-Instruct
-```
+The answer, after a controlled six-experiment arc: memory retrieval **is** load-bearing
+(+17.8 pp), but naïve retraining, global repair-memory promotion, and TF-IDF routing are
+not sufficient for robust generalisation. The binding constraint is retrieval relevance.
 
 ---
 
-## Long Context — NTK-Aware RoPE Scaling
+## Final Result Card
 
-AetherForge extends to longer contexts at inference time without retraining, using
-NTK-aware RoPE base scaling. Higher scale adjusts high-frequency components more
-aggressively than low-frequency ones — superior to naive linear position interpolation.
+| Configuration | Benchmark | Score | Type |
+|---|---|---|---|
+| Adapter only (no memory) | Frozen 28-task | 18/28 = 64.3% | Clean |
+| **Clean champion (memory k=4)** | **Frozen 28-task** | **23/28 = 82.1%** | **Clean** |
+| Repair diagnostic index | Frozen 28-task | 27/28 = 96.4% | **Diagnostic only†** |
+| Champion on clean generalisation | 32-task clean | 20/32 = 62.5% | Clean |
+| Repair on clean generalisation | 32-task clean | 18/32 = 56.2% | Rejected |
+| Oracle routing ceiling | 32-task clean | 23/32 = 71.9% | Diagnostic |
 
-```python
-from aetherforge.model import AetherForge
-
-# Load a standard 1B checkpoint
-model = AetherForge.from_config("1B")
-model.load_state_dict(torch.load("outputs/aetherforge_pretrain/final/model.pt"))
-
-# Extend context by 4× at inference (no fine-tuning, minimal quality loss)
-model.eval().extend_context(4.0)
-
-# Now accepts sequences up to ~8K tokens trained at 2K
-ids = torch.randint(0, 32000, (1, 8192))
-logits = model(ids)   # works
-```
-
-Or use a long-context config preset directly:
-
-```python
-model = AetherForge.from_config("1B-8k")   # rope_scale=4.0 baked in
-model = AetherForge.from_config("1B-32k")  # rope_scale=16.0 — 32K context
-model = AetherForge.from_config("7B-32k")  # 7B with expanded memory slots
-```
-
-| Config | rope_scale | Approx. max context | VRAM (fp16) |
-|--------|-----------|---------------------|-------------|
-| `1B` | 1.0 | ~2K (training length) | ~4 GB |
-| `1B-8k` | 4.0 | ~8K | ~4 GB |
-| `1B-32k` | 16.0 | ~32K | ~4 GB |
-| `7B-32k` | 16.0 | ~32K | ~14 GB |
+> **† Do not misread the 96.4% result.**  
+> The 27/28 repair-index result is diagnostic because it targets known frozen-benchmark
+> failures. The benchmark is no longer independent for this configuration. It is not
+> reported as the clean held-out champion. The clean champion is **23/28 = 82.1%**.
 
 ---
 
-## Pretraining + Multi-GPU
+## What This Project Proves
 
-AetherForge pretraining supports three data modes, single-GPU AMP, and multi-GPU
-DDP via `torchrun` — no code changes between single and multi-GPU.
+- **Verified memory retrieval is load-bearing.** Removing the memory index drops
+  performance by 17.8 pp (82.1% → 64.3%). Memory is not decorative — it is required for
+  at least 6 tasks that fail entirely without retrieved context.
 
-```bash
-# FineWeb streaming — no disk space needed, samples on the fly
-conda run -n ml-torch python scripts/train_aetherforge.py \
-    --stream --dataset HuggingFaceFW/fineweb --dataset-config sample-10BT \
-    --config 128M --steps 10000
+- **Merge is safe.** `merge_and_unload` applied to the LoRA adapter changes performance
+  by ≤3.5 pp (within variance). The merged checkpoint is the reference model.
 
-# Local JSONL + 1B model + gradient checkpointing (fits 16 GB at seq=512)
-conda run -n ml-torch python scripts/train_aetherforge.py \
-    --data data/synthetic_data.jsonl --config 1B \
-    --gradient-checkpointing --seq-len 512 --steps 5000
+- **k=4 is the optimal retrieval depth.** k=1 loses −10.7 pp; k=5 loses −3.5 pp.
 
-# 4-GPU DDP  (eff. batch = batch × grad_accum × 4)
-torchrun --nproc_per_node=4 scripts/train_aetherforge.py \
-    --stream --config 7B --gradient-checkpointing \
-    --batch-size 2 --grad-accum 8 --steps 100000 --wandb
-```
+- **Retraining does not help.** Five retraining configurations were tested. All regressed
+  versus the champion, by 17.9–25.0 pp. The original 300-step, 6e-6 LR, agent-only
+  training trajectory is not recoverable by continued training.
 
-### Key flags
+- **Global repair memory does not generalise.** Adding 4 repair records to the index
+  fixes specific known failures but reshuffles TF-IDF retrieval for all tasks, causing
+  net regression on 32 clean unseen tasks (56.2% vs 62.5%).
 
-| Flag | Default | Effect |
-|------|---------|--------|
-| `--stream` | off | Stream from HF instead of local JSONL |
-| `--dataset` | `HuggingFaceFW/fineweb` | HF dataset repo id |
-| `--dataset-config` | `sample-10BT` | Subset / config name |
-| `--config` | — | Size preset: `128M` / `1B` / `7B` / `13B` |
-| `--gradient-checkpointing` | off | Recompute activations (~40% VRAM saving) |
-| `--balance-alpha` | 0.01 | AQ-MoE load-balance loss weight |
-| `--wandb` | off | Log to Weights & Biases |
-| `--resume` | — | Resume from checkpoint directory |
+- **TF-IDF routing cannot selectively gate repair.** Family routing, confidence routing,
+  and oracle routing were all tested. No routing strategy beats the champion index. The
+  root cause is that TF-IDF similarity measures vocabulary overlap, not algorithmic
+  relevance — repair records leak across entire algorithm families.
 
 ---
 
-## Knowledge Distillation
+## What This Project Does Not Claim
 
-Train AetherForge by learning from Qwen2.5-VL-7B-Instruct's soft output
-distribution — no large raw-text corpus needed.
-
-```
-L = α · T² · KL(p_teacher ‖ p_student) + (1-α) · CE(student, labels)
-```
-
-Both models share the Qwen tokenizer so KL divergence is computed over the same
-token space. Teacher visual-token logits are sliced before KL to avoid contaminating
-text training with vision tokens. Response-only masking restricts both losses to
-assistant turns.
-
-```bash
-# Smoke-test (25 steps, ~9.25 GB VRAM)
-conda run -n ml-torch python scripts/distill_aetherforge.py --test-run
-
-# Full distillation — built-in 240-sample dataset
-conda run -n ml-torch python scripts/distill_aetherforge.py \
-    --config 128M --temperature 3.0 --alpha 0.7 --steps 5000
-
-# Your own JSONL  ({"instruction": "...", "response": "..."} per line)
-conda run -n ml-torch python scripts/distill_aetherforge.py \
-    --config 128M --data data/your_data.jsonl \
-    --temperature 3.0 --alpha 0.7 --steps 10000 --wandb
-```
-
-### VRAM budget
-
-| Component | VRAM |
-|-----------|------|
-| Teacher (Qwen2.5-VL-7B, 4-bit NF4) | ~6.0 GB |
-| Student (AetherForge 128M, fp16) | ~0.9 GB (weights + optimizer) |
-| Activations + teacher logit buffer | ~1.3 GB |
-| **Total** | **~9.25 GB** |
+- That 27/28 = 96.4% is a clean held-out champion (it is not)
+- That retraining improved the model (it did not)
+- That any routing strategy delivers a reliable improvement (none did)
+- Generalisation to SWE-bench or production repository tasks (not evaluated)
+- Superiority over any other model without co-evaluation on the same tasks
+- That the results are production-grade (best-of-3 on 28–32 tasks, single GPU, no API)
 
 ---
 
-## Quick Start
+## Architecture
 
-### 1. Install Dependencies
-
-```bash
-conda create -n aetherforge python=3.11 -y
-conda activate aetherforge
-
-pip install torch --index-url https://download.pytorch.org/whl/cu124
-pip install -r requirements.txt
+```
+User coding task
+        |
+        v
+Evaluator: system prompt + RETRIEVED_VERIFIED_MEMORY block
+        |
+        +--- Memory retrieval: memory/index_adapted (99 records)
+        |    TF-IDF embedder, k=4, cosine similarity
+        |
+        v
+Merged Qwen2.5-Coder-1.5B champion
+(outputs/qwen15b_v27_champion_merged)
+        |
+        v
+execute_code tool call (candidate Python function)
+        |
+        v
+Executor: assertion-based test verification
+        |
+        v
+PASS / FAIL  →  best-of-3  →  result CSV
 ```
 
-Or use the existing `ml-torch` conda environment if you have it:
+**Index distinction:**
 
-```bash
-conda run -n ml-torch pip install -r requirements.txt
-```
+| Index | Path | Records | Status |
+|---|---|---|---|
+| Champion index | `memory/index_adapted` | 99 | Frozen clean |
+| Repair diagnostic | `memory/index_adapted_v29` | 103 | Diagnostic only |
 
-### 2. Test the AetherForge Model
-
-```bash
-conda run -n ml-torch python aetherforge/model.py
-# Device: cuda
-# Parameters: 128.2M
-# Forward pass: input (2, 128) -> logits (2, 128, 32000)
-# VRAM: 0.69 GB
-```
-
-### 3. Train AetherForge from Scratch
-
-```bash
-# Smoke-test (no data needed, ~30 s)
-conda run -n ml-torch python scripts/train_aetherforge.py --test-run
-
-# Stream FineWeb — no local download
-conda run -n ml-torch python scripts/train_aetherforge.py \
-    --stream --config 128M --steps 10000
-
-# Multi-GPU via torchrun
-torchrun --nproc_per_node=4 scripts/train_aetherforge.py \
-    --stream --config 1B --gradient-checkpointing --steps 50000
-```
+See [`docs/architecture_overview.md`](docs/architecture_overview.md) and
+[`docs/architecture_diagram_ascii.md`](docs/architecture_diagram_ascii.md) for full detail.
 
 ---
 
-## Qwen2.5-VL-7B Fine-Tuning
+## Benchmark Integrity Finding
 
-[Qwen2.5-VL-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct) is a vision-language model that outperforms Llama 3.2 Vision on most multimodal benchmarks and is compatible with LoRA fine-tuning.
+During v2.9, we discovered that the `tree_depth_tuple` task in the frozen benchmark
+contains a spec-conflicted assertion:
 
-### Text-Only Fine-Tuning (no images required)
+> The prompt expects `tree_depth(((1,2),(3,(4,5)))) == 3`  
+> By the stated recursive rule (leaves have depth 1, branches = 1 + max(children)), the correct value is **4**.
 
-```bash
-# Quick smoke test — 25 steps, verifies full pipeline
-conda run -n ml-torch python scripts/finetune_qwen25_vl.py --mode text --test-run
-
-# Full run — built-in 240-sample dataset or your own JSONL
-conda run -n ml-torch python scripts/finetune_qwen25_vl.py --mode text
-
-# With W&B logging and custom warmup
-conda run -n ml-torch python scripts/finetune_qwen25_vl.py \
-    --mode text \
-    --warmup-steps 50 \
-    --wandb
-```
-
-### Multimodal Fine-Tuning (text + images)
-
-Dataset format — one JSON object per line in `data/vl_dataset.jsonl`:
-
-```json
-{"instruction": "What is in this image?", "response": "A hospital corridor with a robot.", "image": "/path/to/image.jpg"}
-```
-
-```bash
-conda run -n ml-torch python scripts/finetune_qwen25_vl.py \
-    --mode multimodal \
-    --data data/vl_dataset.jsonl \
-    --plot-every 10
-```
-
-Generate a ready-to-use multimodal dataset (20 hospital-scene images):
-
-```bash
-conda run -n ml-torch python multimodal_example/generate_dummy_data.py
-conda run -n ml-torch python scripts/finetune_qwen25_vl.py \
-    --mode multimodal \
-    --data multimodal_example/multimodal_data.jsonl
-```
-
-### Hardware Requirements (RTX 4080 16GB)
-
-| Setting | Value |
-|---------|-------|
-| Quantization | 4-bit NF4 + double quantization |
-| LoRA rank | r=16, alpha=32 (adjustable via `--lora-r`) |
-| Batch size | 1 |
-| Gradient accumulation | 8 (effective batch = 8) |
-| Precision | fp16 + gradient checkpointing |
-| Optimizer | AdamW (wd=0.01) |
-| LR schedule | Linear warmup → cosine decay |
-| Loss masking | Response-only (user prompt masked to -100) |
-| Expected VRAM | 11–14 GB |
-
-### All Fine-Tuning Arguments
-
-```
---mode          text | multimodal          Training mode
---data          path/to/data.jsonl        Dataset (uses built-in if omitted)
---output-dir    ./outputs/qwen25_vl_lora  Output directory
---batch-size    1                         Per-GPU batch size
---grad-accum    8                         Gradient accumulation steps
---max-length    256                       Sequence length (256 = safe on 16GB)
---lr            2e-4                      Peak learning rate
---epochs        1                         Number of epochs
---warmup-steps  20                        Linear LR warmup before cosine
---save-steps    50                        Checkpoint every N steps
---plot-every    20                        Re-save loss_curve.png every N steps
---lora-r        16                        LoRA rank (higher = more VRAM)
---wandb                                   Enable W&B logging
---wandb-project aetherforge               W&B project name
---test-run                                25-step smoke-test
-```
-
-### Inference
-
-```bash
-# Text
-conda run -n ml-torch python scripts/inference_qwen25_vl.py \
-    --prompt "Explain sparse mixture of experts"
-
-# Vision + text
-conda run -n ml-torch python scripts/inference_qwen25_vl.py \
-    --prompt "What do you see?" \
-    --image /path/to/image.jpg
-
-# Load fine-tuned LoRA weights
-conda run -n ml-torch python scripts/inference_qwen25_vl.py \
-    --lora-path ./outputs/qwen25_vl_lora/final \
-    --prompt "Describe the scene"
-
-# Interactive REPL (prefix image path with img:<path>)
-conda run -n ml-torch python scripts/inference_qwen25_vl.py --interactive
-```
+A correct implementation fails the assertion. This was documented transparently.
+All results report both raw and corrected-audit scores. The corrected champion score is
+24/28 = 85.7%. The conservative raw score 23/28 = 82.1% is used throughout.
 
 ---
 
-## Evaluation
+## Dataset and Memory Provenance
 
-```bash
-# Text benchmark (10 questions, base model)
-conda run -n ml-torch python scripts/evaluate_model.py --benchmark text
+| Source | Origin | Type | Status |
+|---|---|---|---|
+| Frozen 28-task benchmark | Local / constructed | Eval tasks | Clean |
+| Champion memory index (99 records) | Local / verified | Memory records | Clean |
+| v2.9 repair records (4 records) | Local / targeted | Memory records | Diagnostic |
+| 32-task clean benchmark | Local / constructed | Eval tasks | Clean (zero overlap) |
+| `data/agent_only_data.jsonl` | Local / curated | Training data | Champion LoRA training |
+| Qwen2.5-Coder-1.5B-Instruct weights | HuggingFace Hub | Model weights | Base model |
 
-# Full benchmark: text + vision + perplexity
-conda run -n ml-torch python scripts/evaluate_model.py \
-    --benchmark all \
-    --image-dir multimodal_example/images
-
-# Compare base model vs. fine-tuned LoRA (prints a diff table)
-conda run -n ml-torch python scripts/evaluate_model.py \
-    --lora-path outputs/qwen25_vl_lora/final \
-    --benchmark all \
-    --compare-base
-```
-
-Baseline (Qwen2.5-VL-7B-Instruct, 4-bit, RTX 4080 Super):
-
-| Benchmark | Score | VRAM |
-|-----------|-------|------|
-| Text (10 Q) | 10/10 (100%) | 5.9 GB |
-| Vision (10 img × 3 Q) | 30/30 (100%) | 5.9 GB |
-| Perplexity (reference texts) | 55.51 | — |
+No HuggingFace datasets were used in the v2.6–v2.13 research arc training or evaluation.
+See [`docs/dataset_provenance.md`](docs/dataset_provenance.md) for full detail.
 
 ---
 
-## Training Dashboard
+## Experiment Timeline (v2.6 – v2.13)
 
-Open `Training_Dashboard.ipynb` after any training run for enterprise-grade monitoring:
-
-- **KPI header** — Final loss, best loss, peak VRAM, train time, throughput, steps
-- **Loss panel** — Raw trace + Savitzky-Golay trend + ±1σ band + best-checkpoint marker
-- **LR + VRAM** — LR schedule and VRAM with 16GB budget line
-- **Throughput + Distribution** — Tok/s bars and loss histogram
-- **Loss heatmap** — Epoch × step bucket grid (red → gold → green)
-- **Correlation matrix** — Pearson r across all metrics
-- **Audit table** — Sampled training log with best-step highlighted
-- **Multi-run overlay** — Compare runs side-by-side (add entries to `RUNS` dict)
-
-```bash
-# Generate a test log first
-make finetune-test     # or: make train-aetherforge-test
-
-# Then open the dashboard
-jupyter notebook Training_Dashboard.ipynb
-```
+| Version | Experiment | Result | Decision |
+|---|---|---|---|
+| v2.5 / v2.6 | Data-mixture and trace-ratio retraining | 50–64.3% | Rejected — retraining harmful |
+| **v2.7** | **Champion preservation audit** | **82.1% (+17.8 pp memory lift)** | **Champion confirmed** |
+| v2.8 | Top-k and prompt-tuning audit | ≤78.6% | Rejected — no improvement |
+| v2.9 | Repair memory diagnostic | 96.4% | Diagnostic — benchmark non-independent |
+| v2.10 | Clean 32-task generalisation | Champion 62.5%, Repair 56.2% | Repair rejected |
+| v2.11 | Routing audit (3 strategies) | All ≤62.5%, oracle 71.9% | All routing rejected |
+| v2.12 | Manuscript and reproducibility packet | 7 documents | Evidence packaged |
+| v2.13 | Paper draft | Full paper | Evidence closed |
 
 ---
 
-## Interactive Chat
+## Reproducibility
+
+Verify in 5 minutes:
 
 ```bash
-# Direct: AetherForge with checkpoint
-conda run -n ml-torch python scripts/chat.py \
-    --checkpoint outputs/aetherforge_pretrain/final/model.pt --config 128M
-
-# Direct: Qwen2.5-VL (requires ~6 GB VRAM)
-conda run -n ml-torch python scripts/chat.py --model qwen
-
-# Via server: connect to a running serve.py
-conda run -n ml-torch python scripts/chat.py --server http://localhost:8000
-
-# Long-context: NTK-aware RoPE scaling (1B at ~8K tokens)
-conda run -n ml-torch python scripts/chat.py --config 1B-8k
+make test
+make audit-attribution
+make summarise-v27-preservation
+make summarise-v28
+make summarise-v29
+make summarise-v210
+make summarise-v211
 ```
 
-In-session commands: `/clear`, `/temp 0.5`, `/top_p 0.95`, `/tokens 500`, `/rep 1.2`, `/help`
+Full reproducibility commands: [`results/v212_manuscript_packet/05_reproducibility_commands.md`](results/v212_manuscript_packet/05_reproducibility_commands.md)
+
+The champion model must be present at `outputs/qwen15b_v27_champion_merged`.
 
 ---
 
-## Inference Server
+## Evidence Packet and Manuscript
 
-FastAPI server with standard /v1 chat-and-completions endpoints — swap in any compatible HTTP client by
-changing the base URL.
-
-```bash
-# AetherForge 128M
-conda run -n ml-torch python scripts/serve.py \
-    --checkpoint outputs/aetherforge_pretrain/final/model.pt --config 128M
-
-# AetherForge 1B with long-context (NTK-aware RoPE, rope_scale=4)
-conda run -n ml-torch python scripts/serve.py --config 1B-8k \
-    --checkpoint outputs/aetherforge_pretrain/final/model.pt
-
-# AetherForge with real BPE tokenizer (not char-level)
-conda run -n ml-torch python scripts/serve.py \
-    --tokenizer Qwen/Qwen2.5-VL-7B-Instruct --config 128M
-
-# Qwen2.5-VL-7B + LoRA adapter
-conda run -n ml-torch python scripts/serve.py \
-    --model qwen --lora-path outputs/qwen25_vl_lora/final
-```
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Liveness + uptime |
-| `/info` | GET | Params, config, VRAM, tokenizer |
-| `/generate` | POST | `{"prompt":"...","max_tokens":200,"temperature":0.8}` |
-| `/stream` | POST | Same, true per-token SSE stream |
-| `/chat` | POST | `{"messages":[{"role":"user","content":"..."}]}` |
-| `/chat/stream` | POST | Chat with SSE stream |
-| `/v1/models` | GET | model listing |
-| `/v1/completions` | POST | completions format (streaming supported) |
-| `/v1/chat/completions` | POST | chat format (streaming supported) |
-
-### cURL examples
-
-```bash
-# Generate
-curl http://localhost:8000/generate \
-    -H "Content-Type: application/json" \
-    -d '{"prompt": "The transformer architecture", "max_tokens": 100}'
-
-# True token streaming
-curl http://localhost:8000/stream \
-    -H "Content-Type: application/json" \
-    -d '{"prompt": "Explain sparse MoE"}' \
-    --no-buffer
-
-# standard chat API
-curl http://localhost:8000/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -d '{"model":"aetherforge","messages":[{"role":"user","content":"Hello"}],"stream":true}'
-
-# Python HTTP client (drop-in)
-python -c "
-# use any compatible HTTP client
-client = HTTPClient(base_url='http://localhost:8000/v1', api_key='none')
-resp = client.chat.completions.create(
-    model='aetherforge',
-    messages=[{'role': 'user', 'content': 'What is fused attention?'}],
-)
-print(resp.choices[0].message.content)
-"
-```
-
-### Swagger UI
-
-Docs auto-generated at `http://localhost:8000/docs` — try every endpoint in the browser.
+| Document | Path |
+|---|---|
+| Executive summary | `results/v212_manuscript_packet/00_executive_summary.md` |
+| Experiment timeline | `results/v212_manuscript_packet/01_experiment_timeline.md` |
+| Results tables | `results/v212_manuscript_packet/02_main_results_table.md` |
+| Failure analysis | `results/v212_manuscript_packet/03_failure_analysis.md` |
+| Claim boundary | `results/v212_manuscript_packet/04_claim_boundary.md` |
+| Reproducibility commands | `results/v212_manuscript_packet/05_reproducibility_commands.md` |
+| Paper draft | `paper/aetherforge_memory_augmented_code_agent_draft.md` |
+| Evidence closure | `docs/evidence_closure_certificate.md` |
 
 ---
 
-## Llama-3.1-8B 4-bit Inference
+## Forensic Notebook
 
-```bash
-# Download model (requires Hugging Face account + Meta license acceptance)
-# Visit https://huggingface.co/meta-llama/Llama-3.1-8B and accept the license first
-conda run -n ml-torch python scripts/download_model.py
+[`notebooks/AetherForge_Forensic_Memory_Audit.ipynb`](notebooks/AetherForge_Forensic_Memory_Audit.ipynb)
 
-# Run inference
-conda run -n ml-torch python scripts/run_4bit.py \
-    --prompt "The robot detected an obstacle and"
-
-# Interactive
-conda run -n ml-torch python scripts/run_4bit.py --interactive
-```
-
-VRAM usage: ~5.5 GB (NF4 quantization).
+A Kaggle-style forensic audit notebook covering all 6 experiments, result tables,
+failure taxonomy charts, decision log, and the certified evidence boundary. No GPU
+required — loads existing result files.
 
 ---
 
-## Model Comparison
+## Evidence Closure Status
 
-| Model | VRAM (4-bit) | Use Case |
-|-------|-------------|----------|
-| AetherForge (128M) | 0.69 GB | Custom pretraining, research |
-| Llama-3.1-8B | ~5.5 GB | General text generation |
-| Qwen2.5-VL-7B | 11–14 GB | Vision + language tasks |
+The v2.6–v2.13 research arc is **closed**.
+
+```
+Clean champion:     23/28 = 82.1%
+Diagnostic repair:  27/28 = 96.4%  (not clean — benchmark non-independent)
+Clean generalisation: champion 20/32 = 62.5% beats repair 18/32 = 56.2%
+Routing ceiling:    23/32 = 71.9% (oracle, diagnostic only)
+Next bottleneck:    operation-aware retrieval relevance
+```
+
+The clean champion — merged Qwen2.5-Coder-1.5B + `memory/index_adapted` — is the
+stable, reproducible result for this arc.
+
+---
+
+## Future Work
+
+1. **Dense code retrieval** — Replace TF-IDF with CodeBERT or nomic-embed-code to address
+   all three identified retrieval failure types (lexical collision, structural overlap,
+   repair vocabulary leak).
+
+2. **Operation-aware memory metadata** — Algorithm family tags on memory records to enable
+   exact-match routing without TF-IDF false positives.
+
+3. **SWE-bench infrastructure** — Extend the evaluation harness to multi-file repository
+   patch generation for real-world relevance.
+
+4. **Larger clean benchmark** — 200+ tasks to reduce sampling variance to below ±1 task.
 
 ---
 
@@ -555,46 +254,47 @@ VRAM usage: ~5.5 GB (NF4 quantization).
 
 ```
 AetherForge-AI/
-├── aetherforge/
-│   ├── __init__.py                 # version = "0.1.0", public exports
-│   └── model.py                   # MLAPlus · AQ-MoE · FRC · grad ckpt · 128M–13B configs
+├── aetherforge/                         Custom transformer model (pretraining / distillation)
 ├── scripts/
-│   ├── train_aetherforge.py       # Pretraining: FineWeb streaming, DDP, grad ckpt, AMP, W&B
-│   ├── distill_aetherforge.py     # Knowledge distillation: Qwen teacher → AetherForge student
-│   ├── finetune_qwen25_vl.py      # Qwen2.5-VL-7B LoRA fine-tuning (text + multimodal)
-│   ├── serve.py                   # FastAPI server: /generate, /stream, /chat
-│   ├── inference_qwen25_vl.py     # Qwen2.5-VL inference (text + vision, interactive)
-│   ├── evaluate_model.py          # Text + vision benchmarks, perplexity, base vs LoRA diff
-│   ├── merge_lora.py              # Merge LoRA adapter into base weights
-│   ├── generate_architecture_diagram.py  # Regenerate docs/architecture.png
-│   ├── run_4bit.py                # Llama-3.1-8B 4-bit NF4 inference
-│   ├── download_model.py          # HF model download helper
-│   └── save_quantized.py          # Save quantized model weights to disk
-├── multimodal_example/
-│   ├── generate_dummy_data.py     # Generate 20 hospital-scene PNG images + JSONL
-│   ├── multimodal_data.jsonl      # Ready-to-use multimodal dataset
-│   └── images/                    # 20 synthetic labeled images
-├── Training_Dashboard.ipynb       # 13-panel enterprise monitoring dashboard
+│   ├── evaluate_code_agent.py           Core evaluation loop (all clean results)
+│   ├── finetune_qwen_code_agent.py      LoRA fine-tuning script (champion training)
+│   ├── build_memory_index.py            Memory index construction
+│   ├── route_v211.py                    Routing audit (v2.11)
+│   ├── summarise_v27_preservation.py    Champion audit summariser
+│   ├── summarise_v28_champion_system.py Hyperparameter audit summariser
+│   ├── summarise_v29_memory_repair.py   Repair memory summariser
+│   ├── summarise_v210.py                Clean generalisation summariser
+│   └── summarise_v211.py                Routing audit summariser
+├── data/
+│   ├── heldout_code_agent_tasks.jsonl   Frozen 28-task benchmark
+│   └── v210_clean_repair_generalisation_tasks.jsonl  32-task clean benchmark
+├── memory/
+│   ├── index_adapted/                   Champion memory index (99 records)
+│   └── index_adapted_v29/               Repair diagnostic index (103 records)
+├── paper/
+│   ├── aetherforge_memory_augmented_code_agent_draft.md
+│   ├── tables/main_results_table.md
+│   └── figures/
+├── notebooks/
+│   └── AetherForge_Forensic_Memory_Audit.ipynb
 ├── docs/
-│   ├── architecture.png           # Dark-theme architecture diagram (200 DPI)
-│   ├── model_card.md              # HF-style model card with training recipes + citation
-│   ├── manuscript.md              # Technical paper: equations, tables, honest roadmap
-│   └── splash.jpg                 # Hero banner
-├── CHANGELOG.md                   # Phase 1–3 release history
-├── Makefile                       # 20+ convenience targets  (make help)
-├── environment.yml                # Full conda environment spec
-├── requirements.txt
-└── .gitignore
+│   ├── architecture_overview.md
+│   ├── architecture_diagram_ascii.md
+│   ├── benchmark_registry.md
+│   ├── model_and_memory_registry.md
+│   ├── dataset_provenance.md
+│   └── evidence_closure_certificate.md
+├── results/
+│   └── v212_manuscript_packet/          Reproducibility packet (all experiment summaries)
+└── Makefile                             All evaluation and summarisation targets
 ```
 
 ---
 
-## References
+## Attribution and Authorship
 
-- Vaswani et al. (2017). [Attention Is All You Need](https://arxiv.org/abs/1706.03762)
-- MLA reference architecture (2024). [MLA-style latent attention: A Strong, Economical, and Efficient MoE Language Model](https://arxiv.org/abs/2405.04434)
-- Shazeer et al. (2017). [Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer](https://arxiv.org/abs/1701.06538)
-- Dettmers et al. (2023). [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
-- Hu et al. (2021). [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
-- Meta AI (2024). [Llama 3 Model Card](https://huggingface.co/meta-llama/Meta-Llama-3-8B)
-- Qwen Team (2024). [Qwen2.5-VL Technical Report](https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct)
+**Author:** Frank Asante Van Laarhoven  
+**Contact:** frankleroyvan@gmail.com
+
+This repository contains original research work. All results are reproducible from
+the provided source code, data files, and Makefile targets.
