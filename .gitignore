@@ -18,6 +18,8 @@ eval_results.json
 # Memory index (generated — not committed)
 memory/index/
 memory/manifests/
+# Generated dense vector indexes (not committed)
+memory/dense_index*/
 # extracted_memories.jsonl — output of extract_memory_from_evals.py, not committed
 memory/raw/extracted_memories.jsonl
 # seed_memories.jsonl IS committed (hand-curated seeds)

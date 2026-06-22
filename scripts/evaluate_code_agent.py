@@ -1153,7 +1153,12 @@ def main():
     ap.add_argument("--dense-model",    default=None,
                     help="SentenceTransformer model name or path (overrides stored model name)")
     ap.add_argument("--rerank-top-n",   type=int, default=20,
-                    help="TF-IDF candidate count for hybrid reranking (default: 20)")
+                    help="Shortlist candidate count for hybrid reranking (default: 20)")
+    ap.add_argument("--embedding-backend", default="sentence-transformer",
+                    choices=["sentence-transformer"],
+                    help="Embedding backend for dense/hybrid retrieval. Only "
+                         "'sentence-transformer' is supported; reserved for future "
+                         "backends (e.g. a 4-bit HF encoder).")
     ap.add_argument("--tasks-file",   default="",
                     help="JSONL file with tasks to evaluate instead of the built-in benchmark. "
                          "Each record needs 'id', 'category', and 'prompt'.")
@@ -1235,7 +1240,8 @@ def main():
                     model_name=args.dense_model,
                 )
                 retriever = dr.retrieve
-                print(f"[memory] Dense retriever loaded from {args.dense_index}")
+                print(f"[memory] Dense retriever loaded from {args.dense_index} "
+                      f"[backend={args.embedding_backend}]")
             except FileNotFoundError as exc:
                 print(f"[memory] ERROR: {exc}")
                 print("[memory] Build dense index: python scripts/build_dense_memory_index.py")
@@ -1251,8 +1257,9 @@ def main():
                 )
                 retriever = hr.retrieve
                 print(
-                    f"[memory] Hybrid retriever: tfidf={args.memory_index} "
-                    f"dense={args.dense_index} rerank_top_n={args.rerank_top_n}"
+                    f"[memory] Hybrid retriever: shortlist={args.memory_index} "
+                    f"dense={args.dense_index} rerank_top_n={args.rerank_top_n} "
+                    f"[backend={args.embedding_backend}]"
                 )
             except FileNotFoundError as exc:
                 print(f"[memory] ERROR: {exc}")

@@ -1934,6 +1934,103 @@ summarise-v218:
 	@echo "Strong result: >=22/32. Noise floor determined by Phase A runs."
 	@echo "See results/v218_retrieval_stability/ for full analysis."
 
+# ── v2.18 Phase B: 3-run code-dense audit (UniXcoder primary) ──────────────
+# Tests a different-architecture code-pretrained encoder (768d) against the
+# stabilised code-aware MiniLM dense baseline (384d, mean 16.3/32).
+# NOTE: in hybrid mode, stage-1 shortlist uses memory/index_adapted, which is
+# code-aware MiniLM dense (per Phase A finding) — NOT TF-IDF. Stage-2 reranks
+# with the Phase B encoder.
+#
+# Usage:
+#   make build-v218-phaseb-code-index
+#   make eval-v218-phaseb-code-dense-32-run1    (run2, run3)
+#   make eval-v218-phaseb-code-hybrid-32-run1   (run2, run3)
+#   make summarise-v218-phaseb
+#
+# Fallback to CodeBERT (override both vars):
+#   make build-v218-phaseb-code-index \
+#       V218_PHASEB_MODEL=microsoft/codebert-base \
+#       V218_PHASEB_INDEX=memory/dense_index_codebert
+
+V218_PHASEB_MODEL ?= microsoft/unixcoder-base
+V218_PHASEB_INDEX ?= memory/dense_index_unixcoder
+
+.PHONY: build-v218-phaseb-code-index \
+        eval-v218-phaseb-code-dense-32-run1 eval-v218-phaseb-code-dense-32-run2 \
+        eval-v218-phaseb-code-dense-32-run3 \
+        eval-v218-phaseb-code-hybrid-32-run1 eval-v218-phaseb-code-hybrid-32-run2 \
+        eval-v218-phaseb-code-hybrid-32-run3 \
+        summarise-v218-phaseb
+
+build-v218-phaseb-code-index:
+	@test -d $(V218_TFIDF_INDEX) || (echo "ERROR: source index not found at $(V218_TFIDF_INDEX)" && exit 1)
+	$(ENV) python scripts/build_dense_memory_index.py \
+		--source-index $(V218_TFIDF_INDEX) \
+		--output-dir $(V218_PHASEB_INDEX) \
+		--dense-model $(V218_PHASEB_MODEL) \
+		--batch-size 32 \
+		--device auto
+	@echo "Phase B code-dense index built: $(V218_PHASEB_INDEX) (model: $(V218_PHASEB_MODEL))"
+
+# Template: generate dense + hybrid eval targets for run $(1)
+define V218_PHASEB_EVAL_RULE
+eval-v218-phaseb-code-dense-32-run$(1):
+	@test -d $(V218_MODEL)        || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32)     || (echo "ERROR: task file not found at $(V218_TASKS_32)" && exit 1)
+	@test -d $(V218_PHASEB_INDEX) || (echo "ERROR: dense index not found — run make build-v218-phaseb-code-index" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V218_MODEL) \
+		--tasks-file $(V218_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode dense \
+		--dense-index $(V218_PHASEB_INDEX) \
+		--dense-model $(V218_PHASEB_MODEL) \
+		--memory-top-k 4 \
+		--output outputs/eval_v218_phaseb_code_dense_32_run$(1) \
+		--verbose
+	@echo "v2.18 Phase B code-dense run $(1) complete."
+
+eval-v218-phaseb-code-hybrid-32-run$(1):
+	@test -d $(V218_MODEL)        || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32)     || (echo "ERROR: task file not found at $(V218_TASKS_32)" && exit 1)
+	@test -d $(V218_PHASEB_INDEX) || (echo "ERROR: dense index not found — run make build-v218-phaseb-code-index" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V218_MODEL) \
+		--tasks-file $(V218_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V218_TFIDF_INDEX) \
+		--retrieval-mode hybrid \
+		--dense-index $(V218_PHASEB_INDEX) \
+		--dense-model $(V218_PHASEB_MODEL) \
+		--rerank-top-n $(V218_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v218_phaseb_code_hybrid_32_run$(1) \
+		--verbose
+	@echo "v2.18 Phase B code-hybrid run $(1) complete."
+endef
+
+$(eval $(call V218_PHASEB_EVAL_RULE,1))
+$(eval $(call V218_PHASEB_EVAL_RULE,2))
+$(eval $(call V218_PHASEB_EVAL_RULE,3))
+
+summarise-v218-phaseb:
+	@mkdir -p $(V218_OUT_DIR)
+	$(ENV) python scripts/summarise_v218_phaseb.py
+	@echo ""
+	@echo "Phase B summary: $(V218_OUT_DIR)/phase_b_code_dense_summary.md"
+	@echo "Comparison CSV : $(V218_OUT_DIR)/phase_b_code_dense_comparison.csv"
+	@echo "Claim boundary : $(V218_OUT_DIR)/phase_b_claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

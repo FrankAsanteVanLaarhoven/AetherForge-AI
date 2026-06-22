@@ -1,0 +1,4 @@
+mode,run1,run2,run3,mean,min,max,delta_vs_baseline,gate_pass
+baseline_minilm_dense,17,15,17,16.33,15,17,0.00,n/a
+code_dense,15,20,20,18.33,15,20,+2.00,False
+code_hybrid,19,15,19,17.67,15,19,+1.33,False
