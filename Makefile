@@ -1543,6 +1543,50 @@ env-create:
 env-update:
 	conda env update -f environment.yml --prune
 
+# ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
+.PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
+
+# Attribution audit — verifies only Frank Asante Van Laarhoven appears as author.
+# Logic is in scripts/audit_attribution.sh to keep patterns out of this file.
+audit-attribution:
+	@bash scripts/audit_attribution.sh
+
+# Render README check — verifies README contains key evidence markers.
+render-readme-check:
+	@echo "=== README content check ==="
+	@grep -q "23/28 = 82.1%" README.md || (echo "FAIL: champion score missing from README" && exit 1)
+	@grep -q "27/28 = 96.4%" README.md || (echo "FAIL: diagnostic score missing from README" && exit 1)
+	@grep -q "Diagnostic only" README.md || (echo "FAIL: diagnostic label missing from README" && exit 1)
+	@grep -q "evidence_closure_certificate" README.md || (echo "FAIL: evidence closure link missing" && exit 1)
+	@grep -q "architecture_overview" README.md || (echo "FAIL: architecture link missing" && exit 1)
+	@echo "README check PASSED"
+
+# Notebook smoke-test — verify notebook parses and all cells are valid JSON.
+notebook-smoke:
+	@echo "=== Notebook smoke-test ==="
+	@python -c "import json; nb=json.load(open('notebooks/AetherForge_Forensic_Memory_Audit.ipynb')); [setattr(nb,'_',None) or __import__('sys').exit(1) if c.get('cell_type') not in ('markdown','code') else None for c in nb['cells']]; print(f'Notebook OK: {len(nb[\"cells\"])} cells, all valid')"
+	@echo "Notebook smoke-test PASSED"
+
+# v2.14 docs check — verify all new docs exist and are non-empty.
+v214-docs-check:
+	@echo "=== v2.14 docs check ==="
+	@for f in \
+	  docs/architecture_overview.md \
+	  docs/architecture_diagram_ascii.md \
+	  docs/benchmark_registry.md \
+	  docs/model_and_memory_registry.md \
+	  docs/dataset_provenance.md \
+	  docs/evidence_closure_certificate.md \
+	  notebooks/AetherForge_Forensic_Memory_Audit.ipynb \
+	  paper/aetherforge_memory_augmented_code_agent_draft.md \
+	  paper/tables/main_results_table.md \
+	  paper/figures/experiment_timeline_spec.md \
+	  paper/figures/retrieval_failure_taxonomy_spec.md; do \
+	    test -s "$$f" || (echo "FAIL: missing or empty: $$f" && exit 1); \
+	    echo "  OK: $$f"; \
+	done
+	@echo "v2.14 docs check PASSED"
+
 # ── Help ──────────────────────────────────────────────────────────────────
 help:
 	@echo ""
@@ -1583,4 +1627,9 @@ help:
 	@echo "  make infer                            Interactive Qwen2.5-VL inference"
 	@echo "  make infer-4bit                       Interactive Llama-3.1-8B 4-bit inference"
 	@echo "  make env-create                       Create conda env from environment.yml"
+	@echo ""
+	@echo "  make audit-attribution                Audit git history and files for attribution"
+	@echo "  make render-readme-check              Verify README contains key evidence markers"
+	@echo "  make notebook-smoke                   Verify notebook parses correctly"
+	@echo "  make v214-docs-check                  Verify all v2.14 documentation files exist"
 	@echo ""
