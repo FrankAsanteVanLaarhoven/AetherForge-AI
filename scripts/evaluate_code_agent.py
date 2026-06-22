@@ -1146,10 +1146,14 @@ def main():
     ap.add_argument("--memory-top-k",   type=int, default=4,
                     help="Number of memory records to retrieve per task")
     ap.add_argument("--retrieval-mode", default="tfidf",
-                    choices=["tfidf", "dense", "hybrid"],
-                    help="Retrieval backend: tfidf (default) | dense | hybrid")
+                    choices=["tfidf", "dense", "hybrid", "structured", "structured-hybrid"],
+                    help="Retrieval backend: tfidf (default) | dense | hybrid | "
+                         "structured (v2.19 multi-view + rerank) | structured-hybrid "
+                         "(structured rerank gated by the baseline shortlist)")
     ap.add_argument("--dense-index",    default="memory/dense_index_adapted",
                     help="Directory containing the pre-built dense vector index")
+    ap.add_argument("--structured-index", default="memory/dense_index_v219_structured",
+                    help="Directory containing the v2.19 structured dense index")
     ap.add_argument("--dense-model",    default=None,
                     help="SentenceTransformer model name or path (overrides stored model name)")
     ap.add_argument("--rerank-top-n",   type=int, default=20,
@@ -1268,6 +1272,29 @@ def main():
                     "  python scripts/build_vector_memory.py\n"
                     "  python scripts/build_dense_memory_index.py"
                 )
+                sys.exit(1)
+        elif mode_tag in ("structured", "structured-hybrid"):
+            try:
+                from memory.structured_retriever import StructuredReranker
+                is_hybrid = mode_tag == "structured-hybrid"
+                sr = StructuredReranker(
+                    index_dir=Path(args.structured_index),
+                    model_name=args.dense_model,
+                    rerank_top_n=args.rerank_top_n,
+                    mode="hybrid" if is_hybrid else "dense",
+                    shortlist_index=Path(args.memory_index) if is_hybrid else None,
+                )
+                retriever = sr.retrieve
+                print(
+                    f"[memory] Structured retriever ({mode_tag}): "
+                    f"index={args.structured_index} rerank_top_n={args.rerank_top_n}"
+                    + (f" shortlist={args.memory_index}" if is_hybrid else "")
+                    + f" [backend={args.embedding_backend}]"
+                )
+            except FileNotFoundError as exc:
+                print(f"[memory] ERROR: {exc}")
+                print("[memory] Build the structured index: "
+                      "make build-v219-structured-memory-index")
                 sys.exit(1)
 
     # Load model

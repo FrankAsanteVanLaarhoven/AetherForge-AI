@@ -1,0 +1,4 @@
+mode,run1,run2,run3,mean,std,min,max,delta_vs_baseline,gate_pass
+baseline_minilm_dense,17,15,17,16.33,0.94,15,17,0.00,n/a
+structured_dense,20,16,18,18.00,1.63,16,20,+1.67,False
+structured_hybrid,22,16,20,19.33,2.49,16,22,+3.00,True

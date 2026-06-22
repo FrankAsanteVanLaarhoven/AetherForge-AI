@@ -2031,6 +2031,106 @@ summarise-v218-phaseb:
 	@echo "Comparison CSV : $(V218_OUT_DIR)/phase_b_code_dense_comparison.csv"
 	@echo "Claim boundary : $(V218_OUT_DIR)/phase_b_claim_boundary.md"
 
+# ── v2.19 Structured Memory Records + Query Reranking ─────────────────────
+# Holds the encoder FIXED (baseline code-aware MiniLM) to isolate the effect of
+# record structure + multi-view query + deterministic reranking against the
+# stabilised baseline (mean 16.3/32). Same protected memory pool; only embedding,
+# retrieval, and ranking change. Protected indexes are never overwritten.
+#
+# Usage:
+#   make build-v219-structured-memory-index
+#   make eval-v219-structured-dense-32-run1    (run2, run3)
+#   make eval-v219-structured-hybrid-32-run1   (run2, run3)
+#   make summarise-v219-structured
+
+V219_MODEL          := $(V218_MODEL)
+V219_TASKS_32       := $(V218_TASKS_32)
+V219_BASELINE_INDEX := memory/index_adapted
+V219_STRUCT_RECORDS := memory/structured_v219/records.jsonl
+V219_STRUCT_INDEX   := memory/dense_index_v219_structured
+V219_ENCODER        := models/embeddings/code-memory-embedder
+V219_RERANK_N       := 20
+V219_OUT_DIR        := results/v219_structured_memory
+
+.PHONY: build-v219-structured-memory-index \
+        eval-v219-structured-dense-32-run1 eval-v219-structured-dense-32-run2 \
+        eval-v219-structured-dense-32-run3 \
+        eval-v219-structured-hybrid-32-run1 eval-v219-structured-hybrid-32-run2 \
+        eval-v219-structured-hybrid-32-run3 \
+        summarise-v219-structured
+
+build-v219-structured-memory-index:
+	@test -d $(V219_BASELINE_INDEX) || (echo "ERROR: protected index not found at $(V219_BASELINE_INDEX)" && exit 1)
+	@test -d $(V219_ENCODER)        || (echo "ERROR: baseline encoder not found at $(V219_ENCODER)" && exit 1)
+	$(ENV) python scripts/build_structured_memory_records.py \
+		--source-index $(V219_BASELINE_INDEX) \
+		--output $(V219_STRUCT_RECORDS)
+	$(ENV) python scripts/build_dense_memory_index.py \
+		--memory-jsonl $(V219_STRUCT_RECORDS) \
+		--output-dir $(V219_STRUCT_INDEX) \
+		--dense-model $(V219_ENCODER) \
+		--batch-size 32 --device auto
+	@echo "v2.19 structured index built: $(V219_STRUCT_INDEX) (encoder: $(V219_ENCODER))"
+
+# Template: generate structured dense + hybrid eval targets for run $(1)
+define V219_EVAL_RULE
+eval-v219-structured-dense-32-run$(1):
+	@test -d $(V219_MODEL)        || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32)     || (echo "ERROR: task file not found at $(V219_TASKS_32)" && exit 1)
+	@test -d $(V219_STRUCT_INDEX) || (echo "ERROR: structured index not found — run make build-v219-structured-memory-index" && exit 1)
+	@mkdir -p $(V219_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V219_MODEL) \
+		--tasks-file $(V219_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode structured \
+		--structured-index $(V219_STRUCT_INDEX) \
+		--dense-model $(V219_ENCODER) \
+		--rerank-top-n $(V219_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v219_structured_dense_32_run$(1) \
+		--verbose
+	@echo "v2.19 structured-dense run $(1) complete."
+
+eval-v219-structured-hybrid-32-run$(1):
+	@test -d $(V219_MODEL)        || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32)     || (echo "ERROR: task file not found at $(V219_TASKS_32)" && exit 1)
+	@test -d $(V219_STRUCT_INDEX) || (echo "ERROR: structured index not found — run make build-v219-structured-memory-index" && exit 1)
+	@mkdir -p $(V219_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V219_MODEL) \
+		--tasks-file $(V219_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V219_BASELINE_INDEX) \
+		--retrieval-mode structured-hybrid \
+		--structured-index $(V219_STRUCT_INDEX) \
+		--dense-model $(V219_ENCODER) \
+		--rerank-top-n $(V219_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v219_structured_hybrid_32_run$(1) \
+		--verbose
+	@echo "v2.19 structured-hybrid run $(1) complete."
+endef
+
+$(eval $(call V219_EVAL_RULE,1))
+$(eval $(call V219_EVAL_RULE,2))
+$(eval $(call V219_EVAL_RULE,3))
+
+summarise-v219-structured:
+	@mkdir -p $(V219_OUT_DIR)
+	$(ENV) python scripts/summarise_v219_structured_memory.py
+	@echo ""
+	@echo "v2.19 summary : $(V219_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V219_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

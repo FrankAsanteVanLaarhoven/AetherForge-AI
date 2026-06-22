@@ -20,6 +20,8 @@ memory/index/
 memory/manifests/
 # Generated dense vector indexes (not committed)
 memory/dense_index*/
+# Generated structured memory records (not committed)
+memory/structured_v219/
 # extracted_memories.jsonl — output of extract_memory_from_evals.py, not committed
 memory/raw/extracted_memories.jsonl
 # seed_memories.jsonl IS committed (hand-curated seeds)
@@ -35,6 +37,7 @@ results/*
 !results/v212_manuscript_packet/
 !results/v217_dense_retrieval/
 !results/v218_retrieval_stability/
+!results/v219_structured_memory/
 outputs/
 memory/index/
 memory/manifests/
