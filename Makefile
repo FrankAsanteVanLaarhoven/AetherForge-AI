@@ -1543,6 +1543,196 @@ env-create:
 env-update:
 	conda env update -f environment.yml --prune
 
+# ── v2.17 Dense Retrieval Pilot ───────────────────────────────────────────
+# Addresses v2.11 finding: TF-IDF similarity measures vocabulary co-occurrence,
+# not algorithmic relevance. Three failure types (lexical collision, structural
+# overlap, repair leak) are tested against dense + hybrid retrieval.
+#
+# Promotion rule: dense/hybrid must beat champion on 32-task clean benchmark
+# by +2 tasks (62.5% → 68.8%) to be considered a clean improvement.
+#
+# Usage:
+#   make build-v217-dense-index      # requires sentence-transformers
+#   make eval-v217-tfidf-28          # TF-IDF baseline (28 frozen tasks)
+#   make eval-v217-dense-28          # Dense (28 frozen tasks)
+#   make eval-v217-hybrid-28         # Hybrid (28 frozen tasks)
+#   make eval-v217-tfidf-32          # TF-IDF baseline (32 clean tasks)
+#   make eval-v217-dense-32          # Dense (32 clean tasks)
+#   make eval-v217-hybrid-32         # Hybrid (32 clean tasks)
+#   make summarise-v217              # Tabulate all results
+
+.PHONY: build-v217-dense-index \
+        eval-v217-tfidf-28 eval-v217-dense-28 eval-v217-hybrid-28 \
+        eval-v217-tfidf-32 eval-v217-dense-32 eval-v217-hybrid-32 \
+        summarise-v217
+
+V217_MODEL        := outputs/qwen15b_v27_champion_merged
+V217_TFIDF_INDEX  := memory/index_adapted
+V217_DENSE_INDEX  := memory/dense_index_adapted
+V217_DENSE_MODEL  := sentence-transformers/all-MiniLM-L6-v2
+V217_TASKS_28     :=
+V217_TASKS_32     := data/v210_clean_repair_generalisation_tasks.jsonl
+V217_OUT_DIR      := results/v217_dense_retrieval
+V217_RERANK_N     := 20
+
+# Build dense index from frozen champion TF-IDF index
+build-v217-dense-index:
+	@test -d $(V217_TFIDF_INDEX) || (echo "ERROR: TF-IDF index not found at $(V217_TFIDF_INDEX)" && exit 1)
+	$(ENV) python scripts/build_dense_memory_index.py \
+		--source-index $(V217_TFIDF_INDEX) \
+		--output-dir $(V217_DENSE_INDEX) \
+		--dense-model $(V217_DENSE_MODEL) \
+		--batch-size 32 \
+		--device auto
+	@echo "Dense index built: $(V217_DENSE_INDEX)"
+
+# ── 28-task frozen benchmark evaluations ─────────────────────────────────
+
+eval-v217-tfidf-28:
+	@test -d $(V217_MODEL) || (echo "ERROR: model not found at $(V217_MODEL)" && exit 1)
+	@mkdir -p $(V217_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V217_MODEL) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V217_TFIDF_INDEX) \
+		--memory-top-k 4 \
+		--retrieval-mode tfidf \
+		--output outputs/eval_v217_tfidf_28 \
+		--verbose
+	@echo "v2.17 TF-IDF 28-task complete."
+
+eval-v217-dense-28:
+	@test -d $(V217_MODEL)       || (echo "ERROR: model not found at $(V217_MODEL)" && exit 1)
+	@test -d $(V217_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v217-dense-index first" && exit 1)
+	@mkdir -p $(V217_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V217_MODEL) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode dense \
+		--dense-index $(V217_DENSE_INDEX) \
+		--dense-model $(V217_DENSE_MODEL) \
+		--memory-top-k 4 \
+		--output outputs/eval_v217_dense_28 \
+		--verbose
+	@echo "v2.17 dense 28-task complete."
+
+eval-v217-hybrid-28:
+	@test -d $(V217_MODEL)       || (echo "ERROR: model not found at $(V217_MODEL)" && exit 1)
+	@test -d $(V217_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v217-dense-index first" && exit 1)
+	@mkdir -p $(V217_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V217_MODEL) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V217_TFIDF_INDEX) \
+		--retrieval-mode hybrid \
+		--dense-index $(V217_DENSE_INDEX) \
+		--dense-model $(V217_DENSE_MODEL) \
+		--rerank-top-n $(V217_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v217_hybrid_28 \
+		--verbose
+	@echo "v2.17 hybrid 28-task complete."
+
+# ── 32-task clean generalisation benchmark evaluations ───────────────────
+
+eval-v217-tfidf-32:
+	@test -d $(V217_MODEL)    || (echo "ERROR: model not found at $(V217_MODEL)" && exit 1)
+	@test -f $(V217_TASKS_32) || (echo "ERROR: 32-task file not found at $(V217_TASKS_32)" && exit 1)
+	@mkdir -p $(V217_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V217_MODEL) \
+		--tasks-file $(V217_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V217_TFIDF_INDEX) \
+		--memory-top-k 4 \
+		--retrieval-mode tfidf \
+		--output outputs/eval_v217_tfidf_32 \
+		--verbose
+	@echo "v2.17 TF-IDF 32-task complete."
+
+eval-v217-dense-32:
+	@test -d $(V217_MODEL)       || (echo "ERROR: model not found at $(V217_MODEL)" && exit 1)
+	@test -f $(V217_TASKS_32)    || (echo "ERROR: 32-task file not found at $(V217_TASKS_32)" && exit 1)
+	@test -d $(V217_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v217-dense-index first" && exit 1)
+	@mkdir -p $(V217_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V217_MODEL) \
+		--tasks-file $(V217_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode dense \
+		--dense-index $(V217_DENSE_INDEX) \
+		--dense-model $(V217_DENSE_MODEL) \
+		--memory-top-k 4 \
+		--output outputs/eval_v217_dense_32 \
+		--verbose
+	@echo "v2.17 dense 32-task complete."
+
+eval-v217-hybrid-32:
+	@test -d $(V217_MODEL)       || (echo "ERROR: model not found at $(V217_MODEL)" && exit 1)
+	@test -f $(V217_TASKS_32)    || (echo "ERROR: 32-task file not found at $(V217_TASKS_32)" && exit 1)
+	@test -d $(V217_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v217-dense-index first" && exit 1)
+	@mkdir -p $(V217_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V217_MODEL) \
+		--tasks-file $(V217_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V217_TFIDF_INDEX) \
+		--retrieval-mode hybrid \
+		--dense-index $(V217_DENSE_INDEX) \
+		--dense-model $(V217_DENSE_MODEL) \
+		--rerank-top-n $(V217_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v217_hybrid_32 \
+		--verbose
+	@echo "v2.17 hybrid 32-task complete."
+
+# ── summarise-v217 ────────────────────────────────────────────────────────
+summarise-v217:
+	@echo "=== v2.17 Dense Retrieval Pilot — Summary ==="
+	@for d in \
+	  outputs/eval_v217_tfidf_28 \
+	  outputs/eval_v217_dense_28 \
+	  outputs/eval_v217_hybrid_28 \
+	  outputs/eval_v217_tfidf_32 \
+	  outputs/eval_v217_dense_32 \
+	  outputs/eval_v217_hybrid_32; do \
+	    if [ -d "$$d" ]; then \
+	      echo "  FOUND: $$d"; \
+	      ls "$$d"/*.csv 2>/dev/null | head -3; \
+	    else \
+	      echo "  MISSING: $$d (run eval target first)"; \
+	    fi; \
+	done
+	@echo ""
+	@echo "Promotion rule: dense/hybrid must reach >=22/32 (68.8%) on 32-task to beat champion."
+	@echo "Champion baseline: 20/32 = 62.5%"
+	@echo ""
+	@echo "See results/v217_dense_retrieval/ for full analysis."
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

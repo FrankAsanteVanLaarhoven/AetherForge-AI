@@ -882,10 +882,15 @@ def evaluate(model, tokenizer, tasks: list[dict], mode: str, n: int,
              system_prompt: str = None,
              stop_after_pass: bool = False,
              memory_state: dict = None,
-             memory_top_k: int = 4) -> list[dict]:
+             memory_top_k: int = 4,
+             retriever=None) -> list[dict]:
     from scripts.agent_loop import run_agent, run_agent_best_of_n
 
-    _mem_kwargs = {"memory_state": memory_state, "memory_top_k": memory_top_k}
+    _mem_kwargs = {
+        "memory_state": memory_state,
+        "memory_top_k": memory_top_k,
+        "retriever": retriever,
+    }
 
     results = []
     for i, task in enumerate(tasks):
@@ -1137,9 +1142,18 @@ def main():
     ap.add_argument("--memory-enabled", action="store_true",
                     help="Enable offline vector memory retrieval")
     ap.add_argument("--memory-index",   default="memory/index",
-                    help="Directory containing the pre-built memory index")
+                    help="Directory containing the pre-built TF-IDF memory index")
     ap.add_argument("--memory-top-k",   type=int, default=4,
                     help="Number of memory records to retrieve per task")
+    ap.add_argument("--retrieval-mode", default="tfidf",
+                    choices=["tfidf", "dense", "hybrid"],
+                    help="Retrieval backend: tfidf (default) | dense | hybrid")
+    ap.add_argument("--dense-index",    default="memory/dense_index_adapted",
+                    help="Directory containing the pre-built dense vector index")
+    ap.add_argument("--dense-model",    default=None,
+                    help="SentenceTransformer model name or path (overrides stored model name)")
+    ap.add_argument("--rerank-top-n",   type=int, default=20,
+                    help="TF-IDF candidate count for hybrid reranking (default: 20)")
     ap.add_argument("--tasks-file",   default="",
                     help="JSONL file with tasks to evaluate instead of the built-in benchmark. "
                          "Each record needs 'id', 'category', and 'prompt'.")
@@ -1200,16 +1214,54 @@ def main():
 
     # ── Memory loading ─────────────────────────────────────────────────────
     memory_state = None
+    retriever = None
     if args.memory_enabled:
-        try:
-            from memory.store import load_index as _load_mem
-            memory_state = _load_mem(Path(args.memory_index))
-            n_mem = len(memory_state.get("records", []))
-            print(f"[memory] Loaded {n_mem} verified records from {args.memory_index}")
-        except FileNotFoundError as exc:
-            print(f"[memory] ERROR: {exc}")
-            print("[memory] Build the index: python scripts/build_vector_memory.py")
-            sys.exit(1)
+        mode_tag = args.retrieval_mode
+        if mode_tag == "tfidf":
+            try:
+                from memory.store import load_index as _load_mem
+                memory_state = _load_mem(Path(args.memory_index))
+                n_mem = len(memory_state.get("records", []))
+                print(f"[memory] Loaded {n_mem} verified records from {args.memory_index} [tfidf]")
+            except FileNotFoundError as exc:
+                print(f"[memory] ERROR: {exc}")
+                print("[memory] Build the index: python scripts/build_vector_memory.py")
+                sys.exit(1)
+        elif mode_tag == "dense":
+            try:
+                from memory.dense_retriever import DenseRetriever
+                dr = DenseRetriever(
+                    index_dir=Path(args.dense_index),
+                    model_name=args.dense_model,
+                )
+                retriever = dr.retrieve
+                print(f"[memory] Dense retriever loaded from {args.dense_index}")
+            except FileNotFoundError as exc:
+                print(f"[memory] ERROR: {exc}")
+                print("[memory] Build dense index: python scripts/build_dense_memory_index.py")
+                sys.exit(1)
+        elif mode_tag == "hybrid":
+            try:
+                from memory.hybrid_retriever import HybridRetriever
+                hr = HybridRetriever(
+                    tfidf_index_dir=Path(args.memory_index),
+                    dense_index_dir=Path(args.dense_index),
+                    model_name=args.dense_model,
+                    rerank_top_n=args.rerank_top_n,
+                )
+                retriever = hr.retrieve
+                print(
+                    f"[memory] Hybrid retriever: tfidf={args.memory_index} "
+                    f"dense={args.dense_index} rerank_top_n={args.rerank_top_n}"
+                )
+            except FileNotFoundError as exc:
+                print(f"[memory] ERROR: {exc}")
+                print(
+                    "[memory] Build TF-IDF index and dense index first:\n"
+                    "  python scripts/build_vector_memory.py\n"
+                    "  python scripts/build_dense_memory_index.py"
+                )
+                sys.exit(1)
 
     # Load model
     from scripts.agent_loop import load_hf_model
@@ -1239,7 +1291,8 @@ def main():
                                 system_prompt=eval_system_prompt,
                                 stop_after_pass=args.stop_after_pass,
                                 memory_state=memory_state,
-                                memory_top_k=args.memory_top_k)
+                                memory_top_k=args.memory_top_k,
+                                retriever=retriever)
         all_run_results.append(("base", base_results))
         _save_csv(base_results, Path(args.output) / "base.csv", "base")
         del base_model  # free VRAM
@@ -1256,7 +1309,8 @@ def main():
                            system_prompt=eval_system_prompt,
                            stop_after_pass=args.stop_after_pass,
                            memory_state=memory_state,
-                           memory_top_k=args.memory_top_k)
+                           memory_top_k=args.memory_top_k,
+                           retriever=retriever)
         all_run_results.append((label, results))
         _save_csv(results, Path(args.output) / f"{label}.csv", label)
 

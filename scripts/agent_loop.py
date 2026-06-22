@@ -857,6 +857,7 @@ def run_agent(
     stop_after_pass: bool = False,
     memory_state: dict = None,
     memory_top_k: int = 4,
+    retriever=None,
 ) -> AgentResult:
     """Run the agent loop.
 
@@ -865,14 +866,28 @@ def run_agent(
     system_prompt: override the default SYSTEM prompt (e.g. STRICT_SYSTEM).
     stop_after_pass: if True, immediately emit FINAL_ANSWER when OBSERVATION: PASS
     is received, without waiting for the model to generate one.
-    memory_state: pre-loaded memory index state from memory.store.load_index().
-    When provided, top-k verified examples are retrieved and inserted as
-    RETRIEVED_VERIFIED_MEMORY: guidance in the system prompt.  This is NOT an
-    OBSERVATION; the model must still produce a real TOOL_CALL.
+    memory_state: pre-loaded TF-IDF index state from memory.store.load_index().
+    retriever: optional callable (task, top_k) -> list[dict] for dense/hybrid modes.
+    When retriever is set it takes precedence over memory_state.
+    When provided, top-k verified examples are inserted as RETRIEVED_VERIFIED_MEMORY:
+    guidance in the system prompt.  This is NOT an OBSERVATION; the model must still
+    produce a real TOOL_CALL.
     """
     # ── Optional memory retrieval ─────────────────────────────────────────
     memory_block = None
-    if memory_state is not None:
+    if retriever is not None:
+        try:
+            from memory.core import format_memory_block
+            hits = retriever(task, memory_top_k)
+            hits = [h for h in hits if h.get("verified", False)]
+            if hits:
+                memory_block = format_memory_block(hits)
+                if verbose:
+                    print(f"\n[memory] Retrieved {len(hits)} verified example(s) [dense/hybrid]")
+        except Exception as exc:
+            if verbose:
+                print(f"\n[memory] Warning: retrieval failed ({exc}), continuing without memory")
+    elif memory_state is not None:
         try:
             from memory.embed import embed_query
             from memory.store import search
@@ -1140,6 +1155,7 @@ def run_agent_best_of_n(
     stop_after_pass: bool = False,
     memory_state: dict = None,
     memory_top_k: int = 4,
+    retriever=None,
 ) -> AgentResult:
     """Generate up to N independent agent trajectories and return the best.
 
@@ -1148,6 +1164,7 @@ def run_agent_best_of_n(
 
     early_stop: stop as soon as a candidate has all-passing tests — no need
     to run more candidates once we have a provably correct solution.
+    retriever: optional callable (task, top_k) -> list[dict] for dense/hybrid modes.
     """
     if verbose:
         print(f"\n[Best-of-{n}] sampling up to {n} trajectories …")
@@ -1166,6 +1183,7 @@ def run_agent_best_of_n(
             stop_after_pass=stop_after_pass,
             memory_state=memory_state,
             memory_top_k=memory_top_k,
+            retriever=retriever,
         )
         score = _score_result(result)
         candidates.append(result)
