@@ -45,7 +45,7 @@ All retrained models are not committed to the repository (large files excluded b
 |---|---|
 | Path | `memory/index_adapted` |
 | Records | 99 |
-| Embedder | `models/embeddings/code-memory-embedder` (TF-IDF-like) |
+| Embedder | `models/embeddings/code-memory-embedder` (local code-aware SentenceTransformer, MiniLM-L6, code_search_net) |
 | Status | **FROZEN CLEAN CHAMPION INDEX** |
 | Used in | All clean results (v2.7, v2.8, v2.10, v2.11) |
 
@@ -80,7 +80,7 @@ similarity, causing regressions on tasks that pass with the champion index.
 | Property | Value |
 |---|---|
 | Path | `models/embeddings/code-memory-embedder` |
-| Type | Local TF-IDF-like sentence embedder |
+| Type | Local code-aware SentenceTransformer (MiniLM-L6, nreimers/MiniLM-L6-H384-uncased) |
 | Similarity | Cosine |
 | Retrieval k | 4 (ablation-selected in v2.8) |
 | Min score | 0.0 (no threshold; top-k always returned) |

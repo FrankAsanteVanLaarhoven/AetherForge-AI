@@ -17,7 +17,7 @@ User coding task
 +-----------------------------------------------+
 |  Memory Retrieval                             |
 |  Index: memory/index_adapted (99 records)     |
-|  Embedder: code-memory-embedder (TF-IDF)      |
+|  Embedder: code-memory-embedder (ST, 384d, code-aware)  |
 |  k=4, cosine similarity                       |
 +-----------------------------------------------+
         |
@@ -143,7 +143,7 @@ All v2.8–v2.13 experiments use this checkpoint
 Verified task-solution pairs (local JSONL)
         |
         | scripts/build_memory_index.py (or equivalent)
-        | code-memory-embedder (TF-IDF-like)
+        | code-memory-embedder (SentenceTransformer, 384d, code-aware)
         v
 memory/index_adapted (99 records) -- CLEAN CHAMPION INDEX
         |

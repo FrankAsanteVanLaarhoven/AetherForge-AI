@@ -34,7 +34,7 @@ Each memory record contains:
 - `corrected_tool_call`: A verified working `execute_code` call
 - Status: All records confirmed PASS by execution
 
-**Embedder:** Local TF-IDF-like sentence embedder at `models/embeddings/code-memory-embedder`
+**Embedder:** Local code-aware SentenceTransformer (`nreimers/MiniLM-L6-H384-uncased`, fine-tuned on code_search_net, StackExchange XML) at `models/embeddings/code-memory-embedder`
 **Retrieval:** Cosine similarity, top-k=4 (ablation-selected), minimum score threshold 0.0
 **Injection:** Retrieved records are formatted as `RETRIEVED_VERIFIED_MEMORY` in the system prompt
 
@@ -109,7 +109,7 @@ only 3 of 32 tasks benefit from repair routing; 9 tasks fail regardless of routi
 ## What the Architecture Does Not Include
 
 - No SWE-bench multi-file patch generation in the completed v2.6–v2.13 arc
-- No dense semantic retrieval (CodeBERT/UniXcoder) — tested only with TF-IDF
+- No code-specialised dense models (CodeBERT/UniXcoder) — tested only with local code-aware dense embeddings (MiniLM-L6 scale)
 - No production serving of the champion model (evaluation-only)
 - No cloud inference — fully local
 
