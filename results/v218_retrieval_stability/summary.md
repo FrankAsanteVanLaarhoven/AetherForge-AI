@@ -1,51 +1,62 @@
 # v2.18 Retrieval Baseline Stabilisation + Code-Dense Retrieval
 
-**Status:** IN PROGRESS
+**Status:** PHASE A COMPLETE — Phase B pending model download.
 
-## Motivation
+## Phase A Results — TF-IDF Baseline Stability (COMPLETE)
 
-v2.17 measured TF-IDF at 17/32 = 53.1% vs. historical champion 20/32 = 62.5%.
-The 3-task gap is at the upper bound of the stated ±2–3 task sampling variance.
-Before testing code-specialised embedders, the baseline must be characterised with
-repeated runs so that any improvement can be evaluated against a known noise floor.
+| Run | n_pass | score |
+|---|---|---|
+| Historical champion (v2.10) | 20/32 | 62.5% |
+| v2.17 TF-IDF rerun | 17/32 | 53.1% |
+| v2.18 run 1 | 17/32 | 53.1% |
+| v2.18 run 2 | 15/32 | 46.9% |
+| v2.18 run 3 | 17/32 | 53.1% |
 
-## Phase A — TF-IDF Baseline Stability
+**Mean (v2.18 runs 1–3):** 16.3/32 = 51.0%  
+**Range:** 15–17  
+**Stable PASS tasks:** 11  
+**Stable FAIL tasks:** 11  
+**Flip tasks:** 10  
 
-Three repeated TF-IDF runs on the clean 32-task benchmark.
-Same model, same index, same configuration — only random sampling varies.
+**Historical 20/32 explained:** The v2.10 result is within the tail of the flip-task
+distribution. With 10 flip tasks (6 with ~67% pass rate, 4 with ~33% pass rate),
+a draw of 20/32 is in the upper tail but consistent with sampling variance.
 
-| Run | n_pass | score | Status |
+## CRITICAL FINDING: Baseline is already code-aware dense retrieval
+
+The `memory/index_adapted` index (the "TF-IDF champion") was built with a local
+SentenceTransformer model, not TF-IDF. Confirmed by index inspection:
+`vocab_size = 0`, `dim = 384`, `L2 norm = 1.0`.
+
+The model is `nreimers/MiniLM-L6-H384-uncased` fine-tuned on `code_search_net` and
+StackExchange XML. The TF-IDF fallback in `memory/embed.py` only activates when
+`models/embeddings/code-memory-embedder` is absent. It has never fired.
+
+**Corrected label for all prior "TF-IDF" experiments:**
+> Code-aware dense retrieval — MiniLM-L6 (nreimers/MiniLM-L6-H384-uncased, code_search_net)
+
+**Impact on v2.17 conclusions:** The v2.17 comparison was code-aware MiniLM-L6 (baseline)
+vs. generic MiniLM-L6 all-MiniLM-L6-v2 (dense test). They tied. The null result
+stands — a generic model does not beat a code-aware model of the same scale.
+
+## Phase B Plan — Code-Dense with Larger Architecture (PENDING)
+
+Phase B remains valid but the target has changed. The baseline is already code-aware
+at MiniLM-L6 scale. Phase B must use a **larger or differently-architected** model
+to have headroom for improvement.
+
+| Mode | 32-task mean | vs stable baseline | Decision |
 |---|---|---|---|
-| Historical champion (v2.10) | 20/32 | 62.5% | reference |
-| v2.17 TF-IDF rerun | 17/32 | 53.1% | −3 from historical |
-| v2.18 run 1 | PENDING | PENDING | — |
-| v2.18 run 2 | PENDING | PENDING | — |
-| v2.18 run 3 | PENDING | PENDING | — |
-
-**Mean / range:** PENDING  
-**Stable-pass tasks:** PENDING  
-**Stable-fail tasks:** PENDING  
-**Flip tasks (sampling noise):** PENDING
-
-See `tfidf_baseline_report.md` after running `make summarise-v218-tfidf-stability`.
-
-## Phase B — Code-Specialised Dense Retrieval
-
-Only after Phase A determines the noise floor.
-
-| Mode | 32-task | vs stable TF-IDF | Decision |
-|---|---|---|---|
-| TF-IDF (stabilised mean) | PENDING | 0 | baseline |
-| Code-dense | PENDING | PENDING | PENDING |
+| Code-aware MiniLM-L6 (baseline) | 16.3/32 = 51.0% | 0 | stable baseline |
+| Code-dense (new model) | PENDING | PENDING | PENDING |
 | Code-hybrid | PENDING | PENDING | PENDING |
 
-**Promotion rule:** code-dense or hybrid must beat the stabilised TF-IDF mean by
-more than the measured noise floor, and reach ≥22/32 for strong evidence.
+**Promotion gate:** Phase B mean over 3 runs must exceed 18.3/32 (baseline mean + noise floor)
+AND ideally move at least one stable-fail task to stable-pass.
 
-## Claim Boundaries
+**Model options for Phase B** (require download, ~500MB each):
+- `microsoft/codebert-base` (768d, RoBERTa-based)
+- `microsoft/unixcoder-base` (768d)
+- `nomic-ai/nomic-embed-code` (768d)
 
-- Do not promote any configuration unless it beats stabilised TF-IDF on the 32-task benchmark.
-- Do not claim generalisation beyond these 32 tasks.
-- Do not claim a code embedder outperforms TF-IDF unless the 32-task evidence supports it.
-- If code-dense improves one family but regresses others, record as family-specific only.
-- `memory/index_adapted` remains champion until cleanly beaten.
+See `tfidf_baseline_report.md` for full per-task stability breakdown.

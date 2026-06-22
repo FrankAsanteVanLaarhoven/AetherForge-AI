@@ -1,2 +1,11 @@
 task_id,run1,run2,run3,pass_rate,stability
-PENDING,,,,,
+v210_deep_filter,1,0,1,2/3,flip
+v210_deep_keys,1,0,0,1/3,flip
+v210_find_peak_element,0,1,0,1/3,flip
+v210_insert_interval,0,0,1,1/3,flip
+v210_meeting_rooms,1,1,0,2/3,flip
+v210_range_summary,0,1,0,1/3,flip
+v210_rle_compress,1,0,1,2/3,flip
+v210_rle_expand,1,0,1,2/3,flip
+v210_running_median,1,0,1,2/3,flip
+v210_unflatten_dict,0,1,1,2/3,flip
