@@ -1251,6 +1251,77 @@ summarise-v29-promotion:
 		--output-dir             $(V29_OUT_DIR)
 	@echo "Promotion summary: $(V29_OUT_DIR)/promotion_summary.md"
 
+# ── v2.10 Clean Repair-Generalisation Benchmark ───────────────────────────
+# 32 untouched tasks across 5 families, no overlap with frozen 28-task benchmark.
+# A/B comparison of champion index vs repair-enhanced index on clean tasks.
+#
+# Families:
+#   interval_merge    — interval merging and scheduling
+#   sorted_selection  — sorted-array / median / kth / merge variants
+#   nested_dict       — nested dict access / update / traversal
+#   tuple_tree        — tuple-tree recursion and structural traversal
+#   rle_encoding      — run-length encoding and structural string
+#
+# Promotion rule:
+#   Repair index >= 75% and > champion index on 32 clean tasks
+#   = strong evidence repair memory generalises.
+
+.PHONY: eval-v210-clean-champion eval-v210-repair-index summarise-v210
+
+V210_TASKS   := data/v210_clean_repair_generalisation_tasks.jsonl
+V210_OUT_DIR := results/v210_clean_repair_generalisation
+V210_CHAMP   := outputs/qwen15b_v27_champion_merged
+
+# ── eval-v210-clean-champion ─────────────────────────────────────────────
+eval-v210-clean-champion:
+	@test -d $(V210_CHAMP)   || (echo "ERROR: champion model not found at $(V210_CHAMP)" && exit 1)
+	@test -f $(V210_TASKS)   || (echo "ERROR: v2.10 task file not found at $(V210_TASKS)" && exit 1)
+	@mkdir -p $(V210_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V210_CHAMP) \
+		--tasks-file $(V210_TASKS) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_MEM_INDEX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v210_clean_champion \
+		--verbose
+	@echo "Champion eval complete. See outputs/eval_v210_clean_champion/"
+
+# ── eval-v210-repair-index ───────────────────────────────────────────────
+eval-v210-repair-index: build-v29-adapted-repair-index
+	@test -d $(V210_CHAMP)   || (echo "ERROR: champion model not found at $(V210_CHAMP)" && exit 1)
+	@test -f $(V210_TASKS)   || (echo "ERROR: v2.10 task file not found at $(V210_TASKS)" && exit 1)
+	@mkdir -p $(V210_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V210_CHAMP) \
+		--tasks-file $(V210_TASKS) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_ADAPTED_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v210_repair_index \
+		--verbose
+	@echo "Repair-index eval complete. See outputs/eval_v210_repair_index/"
+
+# ── summarise-v210 ───────────────────────────────────────────────────────
+summarise-v210:
+	@mkdir -p $(V210_OUT_DIR)
+	$(ENV) python scripts/summarise_v210.py \
+		--champion-csv $(V210_OUT_DIR)/champion_results.csv \
+		--repair-csv   $(V210_OUT_DIR)/repair_results.csv \
+		--tasks-file   $(V210_TASKS) \
+		--output-dir   $(V210_OUT_DIR)
+	@echo "Summary       : $(V210_OUT_DIR)/summary.md"
+	@echo "Family breakdown: $(V210_OUT_DIR)/per_family_breakdown.md"
+	@echo "Claim boundary: $(V210_OUT_DIR)/claim_boundary.md"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
