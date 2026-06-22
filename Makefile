@@ -1164,6 +1164,93 @@ summarise-v29:
 	@echo "Summary      : $(V29_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V29_OUT_DIR)/claim_boundary.md"
 
+# ── v2.9 Repair-Index Promotion (index_adapted_v29) ───────────────────────
+# Builds memory/index_adapted_v29 = champion records + 4 repair examples,
+# then runs A/B comparison against the clean champion (memory/index_adapted).
+#
+# Architecture:
+#   Lane 1: memory/index_adapted      (99 rec, clean champion baseline)
+#   Lane 2: memory/index_adapted_v29  (103 rec, repair-enhanced)
+#
+# Claim boundary:
+#   Lane 2 on 28-task benchmark = REPAIR-INDEX DIAGNOSTIC (not clean champion)
+#   Lane 2 on clean gen tasks   = valid generalisation signal
+
+.PHONY: build-v29-adapted-repair-index \
+        eval-v29-adapted-repair-index \
+        eval-v29-adapted-repair-clean-generalisation \
+        summarise-v29-promotion
+
+V29_ADAPTED_IDX := memory/index_adapted_v29
+V29_ADAPTED_RAW := memory/raw_adapted_v29
+
+# ── build-v29-adapted-repair-index ───────────────────────────────────────
+# Combine memory/raw_adapted + memory/raw_v29_repair/repair_records.jsonl
+# into memory/raw_adapted_v29/, then build memory/index_adapted_v29.
+# Keeps memory/index_adapted completely untouched.
+build-v29-adapted-repair-index:
+	@test -d memory/raw_adapted || (echo "ERROR: memory/raw_adapted not found (locally-excluded dir)" && exit 1)
+	@test -f $(V29_REPAIR_RAW)/repair_records.jsonl || \
+		(echo "ERROR: repair records not found at $(V29_REPAIR_RAW)/repair_records.jsonl" && exit 1)
+	@mkdir -p $(V29_ADAPTED_RAW)
+	@cp memory/raw_adapted/*.jsonl $(V29_ADAPTED_RAW)/
+	@cp $(V29_REPAIR_RAW)/repair_records.jsonl $(V29_ADAPTED_RAW)/v29_repair_records.jsonl
+	$(ENV) python scripts/build_vector_memory.py \
+		--raw-dir  $(V29_ADAPTED_RAW) \
+		--index-dir $(V29_ADAPTED_IDX)
+	@echo "Repair-enhanced index: $(V29_ADAPTED_IDX) (103 records)"
+	@echo "Champion index stays: $(V29_MEM_INDEX) (UNTOUCHED)"
+
+# ── eval-v29-adapted-repair-index ────────────────────────────────────────
+# Run merged champion + repair-enhanced index on the full 28-task benchmark.
+# REPAIR-INDEX DIAGNOSTIC: NOT a clean held-out champion.
+eval-v29-adapted-repair-index: build-v29-adapted-repair-index
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_HELDOUT)  || (echo "ERROR: heldout tasks not found at $(V29_HELDOUT)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_HELDOUT) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_ADAPTED_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_adapted_repair_index \
+		--verbose
+	@echo "REPAIR-INDEX DIAGNOSTIC — not a clean champion. See claim_boundary.md"
+
+# ── eval-v29-adapted-repair-clean-generalisation ─────────────────────────
+# Run merged champion + repair-enhanced index on the clean generalisation set.
+eval-v29-adapted-repair-clean-generalisation: build-v29-adapted-repair-index
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_CLEAN_SET) || (echo "ERROR: clean task set not found at $(V29_CLEAN_SET)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_CLEAN_SET) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_ADAPTED_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_adapted_clean_generalisation \
+		--verbose
+	@echo "CLEAN — valid generalisation signal on separate untouched test set."
+
+# ── summarise-v29-promotion ───────────────────────────────────────────────
+summarise-v29-promotion:
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/summarise_v29_promotion.py \
+		--adapted-v29-28task-csv $(V29_OUT_DIR)/adapted_v29_28task_results.csv \
+		--adapted-v29-clean-csv  $(V29_OUT_DIR)/adapted_v29_clean_results.csv \
+		--output-dir             $(V29_OUT_DIR)
+	@echo "Promotion summary: $(V29_OUT_DIR)/promotion_summary.md"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
