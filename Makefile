@@ -1251,6 +1251,207 @@ summarise-v29-promotion:
 		--output-dir             $(V29_OUT_DIR)
 	@echo "Promotion summary: $(V29_OUT_DIR)/promotion_summary.md"
 
+# ── v2.10 Clean Repair-Generalisation Benchmark ───────────────────────────
+# 32 untouched tasks across 5 families, no overlap with frozen 28-task benchmark.
+# A/B comparison of champion index vs repair-enhanced index on clean tasks.
+#
+# Families:
+#   interval_merge    — interval merging and scheduling
+#   sorted_selection  — sorted-array / median / kth / merge variants
+#   nested_dict       — nested dict access / update / traversal
+#   tuple_tree        — tuple-tree recursion and structural traversal
+#   rle_encoding      — run-length encoding and structural string
+#
+# Promotion rule:
+#   Repair index >= 75% and > champion index on 32 clean tasks
+#   = strong evidence repair memory generalises.
+
+.PHONY: eval-v210-clean-champion eval-v210-repair-index summarise-v210
+
+V210_TASKS   := data/v210_clean_repair_generalisation_tasks.jsonl
+V210_OUT_DIR := results/v210_clean_repair_generalisation
+V210_CHAMP   := outputs/qwen15b_v27_champion_merged
+
+# ── eval-v210-clean-champion ─────────────────────────────────────────────
+eval-v210-clean-champion:
+	@test -d $(V210_CHAMP)   || (echo "ERROR: champion model not found at $(V210_CHAMP)" && exit 1)
+	@test -f $(V210_TASKS)   || (echo "ERROR: v2.10 task file not found at $(V210_TASKS)" && exit 1)
+	@mkdir -p $(V210_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V210_CHAMP) \
+		--tasks-file $(V210_TASKS) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_MEM_INDEX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v210_clean_champion \
+		--verbose
+	@echo "Champion eval complete. See outputs/eval_v210_clean_champion/"
+
+# ── eval-v210-repair-index ───────────────────────────────────────────────
+eval-v210-repair-index: build-v29-adapted-repair-index
+	@test -d $(V210_CHAMP)   || (echo "ERROR: champion model not found at $(V210_CHAMP)" && exit 1)
+	@test -f $(V210_TASKS)   || (echo "ERROR: v2.10 task file not found at $(V210_TASKS)" && exit 1)
+	@mkdir -p $(V210_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V210_CHAMP) \
+		--tasks-file $(V210_TASKS) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_ADAPTED_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v210_repair_index \
+		--verbose
+	@echo "Repair-index eval complete. See outputs/eval_v210_repair_index/"
+
+# ── summarise-v210 ───────────────────────────────────────────────────────
+summarise-v210:
+	@mkdir -p $(V210_OUT_DIR)
+	$(ENV) python scripts/summarise_v210.py \
+		--champion-csv $(V210_OUT_DIR)/champion_results.csv \
+		--repair-csv   $(V210_OUT_DIR)/repair_results.csv \
+		--tasks-file   $(V210_TASKS) \
+		--output-dir   $(V210_OUT_DIR)
+	@echo "Summary       : $(V210_OUT_DIR)/summary.md"
+	@echo "Family breakdown: $(V210_OUT_DIR)/per_family_breakdown.md"
+	@echo "Claim boundary: $(V210_OUT_DIR)/claim_boundary.md"
+
+# ── v2.11 Retrieval Routing and Gating Audit ──────────────────────────────
+# Re-uses the 32 v2.10 clean tasks. Tests three routing strategies:
+#   family-router    — repair index only for interval_merge tasks
+#   confidence-router — repair index when repair top-1 score > threshold
+#   oracle-router    — diagnostic ceiling: choose index that passes per task
+#
+# Promotion rule:
+#   family or confidence router beats champion by >= 5 pp on 32 tasks
+#   = strong evidence for retrieval gating.
+
+.PHONY: route-v211 eval-v211-family-router eval-v211-confidence-router \
+        eval-v211-oracle-router summarise-v211
+
+V211_TASKS       := data/v210_clean_repair_generalisation_tasks.jsonl
+V211_OUT_DIR     := results/v211_retrieval_routing
+V211_CHAMP_IDX   := $(V29_MEM_INDEX)
+V211_REPAIR_IDX  := $(V29_ADAPTED_IDX)
+V211_CHAMP_MODEL := outputs/qwen15b_v27_champion_merged
+V211_V210_CHAMP  := results/v210_clean_repair_generalisation/champion_results.csv
+V211_V210_REPAIR := results/v210_clean_repair_generalisation/repair_results.csv
+
+# ── route-v211 ───────────────────────────────────────────────────────────
+# Generate routing decisions and task sub-files for all routers.
+# Depends on repair index being built; champion index is always present.
+route-v211: build-v29-adapted-repair-index
+	@test -f $(V211_TASKS) || (echo "ERROR: v2.10 tasks not found" && exit 1)
+	@test -f $(V211_V210_CHAMP) || (echo "ERROR: v2.10 champion CSV not found — run eval-v210-clean-champion first" && exit 1)
+	@test -f $(V211_V210_REPAIR) || (echo "ERROR: v2.10 repair CSV not found — run eval-v210-repair-index first" && exit 1)
+	@mkdir -p $(V211_OUT_DIR)
+	$(ENV) python scripts/route_v211.py \
+		--tasks-file             $(V211_TASKS) \
+		--champion-index         $(V211_CHAMP_IDX) \
+		--repair-index           $(V211_REPAIR_IDX) \
+		--champion-v210-csv      $(V211_V210_CHAMP) \
+		--repair-v210-csv        $(V211_V210_REPAIR) \
+		--output-dir             $(V211_OUT_DIR) \
+		--confidence-threshold   0.35 \
+		--margin-threshold       0.05
+	@echo "Routing decisions: $(V211_OUT_DIR)/routing_decisions.json"
+	@echo "Routing scores:    $(V211_OUT_DIR)/routing_scores.csv"
+	@echo "Task sub-files:    $(V211_OUT_DIR)/tasks_family_*.jsonl"
+	@echo "                   $(V211_OUT_DIR)/tasks_conf_*.jsonl"
+
+# ── eval-v211-family-router ──────────────────────────────────────────────
+eval-v211-family-router: route-v211
+	@test -d $(V211_CHAMP_MODEL) || (echo "ERROR: champion model not found" && exit 1)
+	@mkdir -p $(V211_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V211_CHAMP_MODEL) \
+		--tasks-file $(V211_OUT_DIR)/tasks_family_champion.jsonl \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V211_CHAMP_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v211_family_champion \
+		--verbose
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V211_CHAMP_MODEL) \
+		--tasks-file $(V211_OUT_DIR)/tasks_family_repair.jsonl \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V211_REPAIR_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v211_family_repair \
+		--verbose
+	@echo "Family-router eval complete."
+	@echo "  Champion sub-eval: outputs/eval_v211_family_champion/"
+	@echo "  Repair sub-eval:   outputs/eval_v211_family_repair/"
+
+# ── eval-v211-confidence-router ──────────────────────────────────────────
+eval-v211-confidence-router: route-v211
+	@test -d $(V211_CHAMP_MODEL) || (echo "ERROR: champion model not found" && exit 1)
+	@mkdir -p $(V211_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V211_CHAMP_MODEL) \
+		--tasks-file $(V211_OUT_DIR)/tasks_conf_champion.jsonl \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V211_CHAMP_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v211_conf_champion \
+		--verbose
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V211_CHAMP_MODEL) \
+		--tasks-file $(V211_OUT_DIR)/tasks_conf_repair.jsonl \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V211_REPAIR_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v211_conf_repair \
+		--verbose
+	@echo "Confidence-router eval complete."
+	@echo "  Champion sub-eval: outputs/eval_v211_conf_champion/"
+	@echo "  Repair sub-eval:   outputs/eval_v211_conf_repair/"
+
+# ── eval-v211-oracle-router ──────────────────────────────────────────────
+# Oracle routing uses existing v2.10 results — no new model inference needed.
+eval-v211-oracle-router: route-v211
+	@echo "Oracle router uses v2.10 results — no new eval needed."
+	@echo "Oracle scores are computed in summarise-v211 from routing_scores.csv."
+	@echo "Run: make summarise-v211"
+
+# ── summarise-v211 ───────────────────────────────────────────────────────
+summarise-v211:
+	@mkdir -p $(V211_OUT_DIR)
+	$(ENV) python scripts/summarise_v211.py \
+		--routing-scores-csv  $(V211_OUT_DIR)/routing_scores.csv \
+		--fam-champion-csv    outputs/eval_v211_family_champion/best_of_3.csv \
+		--fam-repair-csv      outputs/eval_v211_family_repair/best_of_3.csv \
+		--conf-champion-csv   outputs/eval_v211_conf_champion/best_of_3.csv \
+		--conf-repair-csv     outputs/eval_v211_conf_repair/best_of_3.csv \
+		--tasks-file          $(V211_TASKS) \
+		--output-dir          $(V211_OUT_DIR)
+	@echo "Summary:         $(V211_OUT_DIR)/summary.md"
+	@echo "Family breakdown:$(V211_OUT_DIR)/per_family_breakdown.md"
+	@echo "Per-task routing:$(V211_OUT_DIR)/per_task_routing.csv"
+	@echo "Claim boundary:  $(V211_OUT_DIR)/claim_boundary.md"
+
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.
 # Phase 2: real repo-level patch generation.
