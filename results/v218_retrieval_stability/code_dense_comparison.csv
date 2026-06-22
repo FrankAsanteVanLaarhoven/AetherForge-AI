@@ -1,0 +1,4 @@
+mode,model,benchmark,n_tasks,n_pass,score_pct,vs_tfidf_stable_mean,status
+tfidf,local_code_embedder,clean_32,32,PENDING,PENDING,0,pending_phase_a
+code_dense,PENDING,clean_32,32,PENDING,PENDING,PENDING,pending_phase_b
+code_hybrid,PENDING,clean_32,32,PENDING,PENDING,PENDING,pending_phase_b

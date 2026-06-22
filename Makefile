@@ -1733,6 +1733,207 @@ summarise-v217:
 	@echo ""
 	@echo "See results/v217_dense_retrieval/ for full analysis."
 
+# ── v2.18 Retrieval Baseline Stabilisation + Code-Dense Retrieval ─────────
+#
+# Phase A: Run TF-IDF 32-task benchmark three times to measure sampling variance.
+#          Identifies stable-pass, stable-fail, and flip tasks.
+#
+# Phase B: Test code-specialised dense retrieval after baseline is understood.
+#          V218_CODE_DENSE_MODEL can be a local path or installed model name.
+#
+# Usage (Phase A):
+#   make eval-v218-tfidf-32-run1
+#   make eval-v218-tfidf-32-run2
+#   make eval-v218-tfidf-32-run3
+#   make summarise-v218-tfidf-stability
+#
+# Usage (Phase B — after a code-dense model is available):
+#   make build-v218-code-dense-index
+#   make eval-v218-code-dense-32
+#   make eval-v218-code-hybrid-32
+#   make summarise-v218
+
+.PHONY: eval-v218-tfidf-32-run1 eval-v218-tfidf-32-run2 eval-v218-tfidf-32-run3 \
+        summarise-v218-tfidf-stability \
+        build-v218-code-dense-index \
+        eval-v218-code-dense-32 eval-v218-code-hybrid-32 \
+        eval-v218-code-dense-28 eval-v218-code-hybrid-28 \
+        summarise-v218
+
+V218_MODEL        := outputs/qwen15b_v27_champion_merged
+V218_TFIDF_INDEX  := memory/index_adapted
+V218_TASKS_32     := data/v210_clean_repair_generalisation_tasks.jsonl
+V218_CODE_DENSE_INDEX := memory/dense_index_v218_code
+# Override V218_CODE_DENSE_MODEL at the command line or here with a local path.
+# Example: make build-v218-code-dense-index V218_CODE_DENSE_MODEL=models/embeddings/codebert
+V218_CODE_DENSE_MODEL ?= microsoft/codebert-base
+V218_RERANK_N     := 20
+V218_OUT_DIR      := results/v218_retrieval_stability
+
+# ── Phase A: TF-IDF stability runs ───────────────────────────────────────
+
+_v218_tfidf_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V218_MODEL) \
+	--tasks-file $(V218_TASKS_32) \
+	--mode best_of_n --n 3 \
+	--scoring-mode verified_agent \
+	--agent-contract strict \
+	--stop-after-pass \
+	--memory-enabled \
+	--memory-index $(V218_TFIDF_INDEX) \
+	--memory-top-k 4 \
+	--retrieval-mode tfidf \
+	--verbose
+
+eval-v218-tfidf-32-run1:
+	@test -d $(V218_MODEL)    || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32) || (echo "ERROR: task file not found at $(V218_TASKS_32)" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(_v218_tfidf_eval) --output outputs/eval_v218_tfidf_32_run1
+	@echo "v2.18 TF-IDF run 1 complete."
+
+eval-v218-tfidf-32-run2:
+	@test -d $(V218_MODEL)    || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32) || (echo "ERROR: task file not found at $(V218_TASKS_32)" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(_v218_tfidf_eval) --output outputs/eval_v218_tfidf_32_run2
+	@echo "v2.18 TF-IDF run 2 complete."
+
+eval-v218-tfidf-32-run3:
+	@test -d $(V218_MODEL)    || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32) || (echo "ERROR: task file not found at $(V218_TASKS_32)" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(_v218_tfidf_eval) --output outputs/eval_v218_tfidf_32_run3
+	@echo "v2.18 TF-IDF run 3 complete."
+
+summarise-v218-tfidf-stability:
+	@mkdir -p $(V218_OUT_DIR)
+	$(ENV) python scripts/summarise_v218_tfidf_stability.py
+	@echo ""
+	@cat results/v218_retrieval_stability/tfidf_baseline_report.md
+
+# ── Phase B: Code-specialised dense retrieval ─────────────────────────────
+
+build-v218-code-dense-index:
+	@test -d $(V218_TFIDF_INDEX) || (echo "ERROR: TF-IDF index not found at $(V218_TFIDF_INDEX)" && exit 1)
+	$(ENV) python scripts/build_dense_memory_index.py \
+		--source-index $(V218_TFIDF_INDEX) \
+		--output-dir $(V218_CODE_DENSE_INDEX) \
+		--dense-model $(V218_CODE_DENSE_MODEL) \
+		--batch-size 32 \
+		--device auto
+	@echo "Code-dense index built: $(V218_CODE_DENSE_INDEX)"
+
+eval-v218-code-dense-32:
+	@test -d $(V218_MODEL)            || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32)         || (echo "ERROR: task file not found" && exit 1)
+	@test -d $(V218_CODE_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v218-code-dense-index" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V218_MODEL) \
+		--tasks-file $(V218_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode dense \
+		--dense-index $(V218_CODE_DENSE_INDEX) \
+		--dense-model $(V218_CODE_DENSE_MODEL) \
+		--memory-top-k 4 \
+		--output outputs/eval_v218_code_dense_32 \
+		--verbose
+	@echo "v2.18 code-dense 32-task complete."
+
+eval-v218-code-hybrid-32:
+	@test -d $(V218_MODEL)            || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -f $(V218_TASKS_32)         || (echo "ERROR: task file not found" && exit 1)
+	@test -d $(V218_CODE_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v218-code-dense-index" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V218_MODEL) \
+		--tasks-file $(V218_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V218_TFIDF_INDEX) \
+		--retrieval-mode hybrid \
+		--dense-index $(V218_CODE_DENSE_INDEX) \
+		--dense-model $(V218_CODE_DENSE_MODEL) \
+		--rerank-top-n $(V218_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v218_code_hybrid_32 \
+		--verbose
+	@echo "v2.18 code-hybrid 32-task complete."
+
+eval-v218-code-dense-28:
+	@test -d $(V218_MODEL)            || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -d $(V218_CODE_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v218-code-dense-index" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V218_MODEL) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode dense \
+		--dense-index $(V218_CODE_DENSE_INDEX) \
+		--dense-model $(V218_CODE_DENSE_MODEL) \
+		--memory-top-k 4 \
+		--output outputs/eval_v218_code_dense_28 \
+		--verbose
+	@echo "v2.18 code-dense 28-task complete."
+
+eval-v218-code-hybrid-28:
+	@test -d $(V218_MODEL)            || (echo "ERROR: model not found at $(V218_MODEL)" && exit 1)
+	@test -d $(V218_CODE_DENSE_INDEX) || (echo "ERROR: dense index not found — run make build-v218-code-dense-index" && exit 1)
+	@mkdir -p $(V218_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V218_MODEL) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V218_TFIDF_INDEX) \
+		--retrieval-mode hybrid \
+		--dense-index $(V218_CODE_DENSE_INDEX) \
+		--dense-model $(V218_CODE_DENSE_MODEL) \
+		--rerank-top-n $(V218_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v218_code_hybrid_28 \
+		--verbose
+	@echo "v2.18 code-hybrid 28-task complete."
+
+summarise-v218:
+	@echo "=== v2.18 Full Summary ==="
+	@echo ""
+	@echo "--- Phase A: TF-IDF stability ---"
+	@for d in \
+	  outputs/eval_v218_tfidf_32_run1 \
+	  outputs/eval_v218_tfidf_32_run2 \
+	  outputs/eval_v218_tfidf_32_run3; do \
+	    if [ -d "$$d" ]; then echo "  FOUND: $$d"; \
+	    else echo "  MISSING: $$d"; fi; \
+	done
+	@echo ""
+	@echo "--- Phase B: Code-dense results ---"
+	@for d in \
+	  outputs/eval_v218_code_dense_32 \
+	  outputs/eval_v218_code_hybrid_32 \
+	  outputs/eval_v218_code_dense_28 \
+	  outputs/eval_v218_code_hybrid_28; do \
+	    if [ -d "$$d" ]; then echo "  FOUND: $$d"; \
+	    else echo "  MISSING: $$d (run eval target first)"; fi; \
+	done
+	@echo ""
+	@echo "Promotion rule: code-dense/hybrid must beat stabilised TF-IDF baseline on 32-task."
+	@echo "Strong result: >=22/32. Noise floor determined by Phase A runs."
+	@echo "See results/v218_retrieval_stability/ for full analysis."
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

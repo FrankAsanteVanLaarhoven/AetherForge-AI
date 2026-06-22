@@ -32,6 +32,7 @@ data/agent_only_data.jsonl
 results/*
 !results/v212_manuscript_packet/
 !results/v217_dense_retrieval/
+!results/v218_retrieval_stability/
 outputs/
 memory/index/
 memory/manifests/
