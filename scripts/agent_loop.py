@@ -1,7 +1,7 @@
 """
 scripts/agent_loop.py — Agentic Software Engineering loop for AetherForge.
 
-Implements the pattern that makes Cursor feel magical:
+Implements the agentic loop pattern:
   Plan → Write → Execute → Read error → Fix → Re-execute → Verify → Done
 
 The model generates structured text; this loop:
@@ -808,6 +808,20 @@ Rules:
 Available tools: execute_code, run_script, run_tests, read_file, write_file, edit_file,
   search_file, list_files, run_command, check_syntax, run_linter, install_package,
   format_code, git_status, git_diff, git_log
+""")
+
+DIRECT_ANSWER_SYSTEM = textwrap.dedent("""\
+You are AetherForge Code Agent. Solve the given programming task.
+
+CONTRACT:
+1. Your FIRST output must be a TOOL_CALL executing your complete solution:
+     TOOL_CALL: execute_code({"code": "...full implementation with asserts + print('PASS')..."})
+2. Write the complete, correct implementation immediately. Do not explain or summarise first.
+3. If OBSERVATION: ERROR — write CRITIQUE: identifying the root cause (one line), then
+   a revised TOOL_CALL. Never repeat a failing call. Never write OBSERVATION yourself.
+4. FINAL_ANSWER is only valid after OBSERVATION: PASS.
+
+Focus on direct, clean code. Include assert statements. End passing code with print("PASS").
 """)
 
 

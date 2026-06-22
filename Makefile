@@ -1,4 +1,4 @@
-ENV := conda run -n ml-torch
+ENV ?= conda run -n aetherforge-train
 
 # ── Quick checks ──────────────────────────────────────────────────────────
 .PHONY: test-aetherforge test-finetune test-eval help
@@ -633,6 +633,623 @@ summarise-option-a:
 	$(ENV) python scripts/summarise_option_a.py \
 		--baseline outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv \
 		--option-a $(OPTION_A_EVAL)/best_of_3.csv
+
+# ── v2.6 Data Mixture and Trace-Gating Audit ─────────────────────────────
+# Ablation: find the optimal execution-trace fraction in the blended dataset.
+# v2.5 used 100% of traces (57% of blend) and regressed to 53.6%.
+# Hard tasks improved (+24pp) but string/basic collapsed (-50pp, -100pp).
+# This ablation tests 0%, 10%, 25%, 50%, 100% trace fractions.
+# Base pool: 2000 general + 200 failure + 82 memory = 2282 fixed examples.
+# All runs start from outputs/qwen15b_merged_base (no LoRA-on-LoRA).
+# Evaluate each on frozen held-out. Promote only if >= 75.0%.
+
+V26_BASE     := outputs/qwen15b_merged_base
+V26_BASELINE := outputs/current_rerun_20260620_075110/eval_heldout_lora_memory_bon3/best_of_3.csv
+
+.PHONY: build-v26-blends \
+        train-v26-traces000 train-v26-traces010 train-v26-traces025 \
+        train-v26-traces050 train-v26-traces100 \
+        eval-v26-traces000 eval-v26-traces010 eval-v26-traces025 \
+        eval-v26-traces050 eval-v26-traces100 \
+        summarise-v26
+
+build-v26-blends:
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.00
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.10
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.25
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 0.50
+	$(ENV) python scripts/build_v26_trace_blend.py --trace-ratio 1.00
+	@echo "All 5 blends written to data/v26_blend_traces*.jsonl"
+	wc -l data/v26_blend_traces*.jsonl
+
+define V26_TRAIN_RULE
+train-v26-traces$(1):
+	@test -d $(V26_BASE) || (echo "ERROR: $(V26_BASE) missing — run make merge-option-a-lora" && exit 1)
+	@test -s data/v26_blend_traces$(1)pct.jsonl || (echo "ERROR: data/v26_blend_traces$(1)pct.jsonl missing — run make build-v26-blends" && exit 1)
+	$$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model      $(V26_BASE) \
+		--training-file data/v26_blend_traces$(1)pct.jsonl \
+		--steps         300 \
+		--lr            2e-5 \
+		--batch-size    1 \
+		--grad-accum    16 \
+		--max-length    1024 \
+		--agent-only \
+		--agent-contract strict \
+		--memory-enabled \
+		--memory-index  $(MEM_INDEX) \
+		--memory-top-k  4 \
+		--output-dir    outputs/qwen15b_v26_traces$(1)pct_300
+
+eval-v26-traces$(1):
+	@test -d outputs/qwen15b_v26_traces$(1)pct_300/final || (echo "ERROR: train traces$(1) first" && exit 1)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      outputs/qwen15b_v26_traces$(1)pct_300/final \
+		--tasks-file    data/heldout_code_agent_tasks.jsonl \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--output        outputs/eval_frozen_heldout_v26_traces$(1)pct \
+		--verbose
+endef
+
+$(eval $(call V26_TRAIN_RULE,000))
+$(eval $(call V26_TRAIN_RULE,010))
+$(eval $(call V26_TRAIN_RULE,025))
+$(eval $(call V26_TRAIN_RULE,050))
+$(eval $(call V26_TRAIN_RULE,100))
+
+summarise-v26:
+	@echo "=== v2.6 Trace-Gating Ablation Results ==="
+	@for pct in 000 010 025 050 100; do \
+	  csv=outputs/eval_frozen_heldout_v26_traces$${pct}pct/best_of_3.csv; \
+	  if [ -f "$$csv" ]; then \
+	    result=$$($(ENV) python -c "import csv; rows=list(csv.DictReader(open('$$csv'))); p=sum(1 for r in rows if r.get('passed','').strip() in ('True','true','1')); print(f'{p}/{len(rows)}={p*100//len(rows)}%')"); \
+	    echo "  traces $${pct}%:  $$result"; \
+	  else \
+	    echo "  traces $${pct}%:  not yet evaluated"; \
+	  fi; \
+	done
+	@echo "  champion (v0.1): 21/28 = 75.0%"
+	@echo "  v2.5 (100% traces): 15/28 = 53.6%  [rejected]"
+
+# ── v2.7 Champion Preservation Audit ─────────────────────────────────────
+# Goal: find why the 75.0% champion is not preserved by merge-and-retrain.
+# DO NOT train a new model in this milestone — audit only.
+#
+# Champion: outputs/qwen15b_memory_300steps/final (300-step LoRA, Qwen2.5-Coder-1.5B)
+# Known results:
+#   Champion 300-step LoRA + memory : 21/28 = 75.0%
+#   v2.6 traces000                  : 16/28 = 57.1%
+#   v2.6 traces010                  : 14/28 = 50.0%
+#   v2.6 traces025                  : 15/28 = 53.6%
+#
+# Run order:
+#   1. make eval-v27-champion-adapter       (does the champion still reproduce 75.0%?)
+#   2. make merge-v27-champion              (create merged standalone model)
+#   3. make eval-v27-merged-champion        (does merge_and_unload damage the model?)
+#   4. make eval-v27-champion-no-memory     (how much does memory contribute?)
+#   5. make summarise-v27-preservation      (produces the audit report)
+#
+# Optional environment cross-checks:
+#   make eval-v27-champion-adapter-mltorch      (ml-torch env)
+#   make eval-v27-champion-adapter-aetherforge  (aetherforge-train env, same as default)
+
+V27_CHAMPION_LORA   := outputs/qwen15b_memory_300steps/final
+V27_CHAMPION_MERGED := outputs/qwen15b_v27_champion_merged
+V27_HELDOUT         := data/heldout_code_agent_tasks.jsonl
+V27_OUT_DIR         := results/v27_champion_preservation
+
+.PHONY: eval-v27-champion-adapter \
+        eval-v27-champion-adapter-mltorch \
+        eval-v27-champion-adapter-aetherforge \
+        merge-v27-champion \
+        eval-v27-merged-champion \
+        eval-v27-champion-no-memory \
+        eval-v27-champion-original-memory \
+        summarise-v27-preservation
+
+# Control 1: original champion adapter (unmerged), best-of-3, with memory/index.
+# This is the canonical re-evaluation.  Expected: 21/28 = 75.0%.
+eval-v27-champion-adapter:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_adapter \
+		--verbose
+
+# Control 2a: same adapter, forced ml-torch environment.
+# Tests whether env/CUDA/PyTorch version changes the result.
+eval-v27-champion-adapter-mltorch:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	conda run -n ml-torch python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_adapter_mltorch \
+		--verbose
+
+# Control 2b: same adapter, explicit aetherforge-train environment.
+eval-v27-champion-adapter-aetherforge:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	conda run -n aetherforge-train python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_adapter_aetherforge \
+		--verbose
+
+# Control 3: merge champion LoRA into a standalone HF model (no retraining).
+# If eval-v27-merged-champion matches the adapter result, merge is safe.
+# If it drops, the root cause is merge precision / tokenizer / config drift.
+merge-v27-champion:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/merge_lora.py \
+		--lora-path  $(V27_CHAMPION_LORA) \
+		--output-dir $(V27_CHAMPION_MERGED) \
+		--dtype      bfloat16
+	@echo "Merged model saved to $(V27_CHAMPION_MERGED). Verify it loads before eval."
+
+# Control 4: evaluate merged champion WITHOUT retraining.
+# Uses the same eval settings as the champion adapter run.
+eval-v27-merged-champion:
+	@test -d $(V27_CHAMPION_MERGED) || \
+		(echo "ERROR: $(V27_CHAMPION_MERGED) not found — run make merge-v27-champion first." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_MERGED) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_merged_champion \
+		--verbose
+
+# Control 5: champion adapter WITH MEMORY DISABLED.
+# If this drops significantly below 75.0%, the 75.0% result is
+# a model+memory system result, not pure adapter generalisation.
+eval-v27-champion-no-memory:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output         outputs/eval_v27_champion_no_memory \
+		--verbose
+
+# Control 6: champion adapter with original memory/index (explicit).
+# Same as eval-v27-champion-adapter but named to show the index is the
+# original clean index, not memory/index_adapted.
+eval-v27-champion-original-memory:
+	@test -d $(V27_CHAMPION_LORA) || (echo "ERROR: $(V27_CHAMPION_LORA) not found." && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V27_CHAMPION_LORA) \
+		--tasks-file    $(V27_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index memory/index \
+		--memory-top-k   4 \
+		--output         outputs/eval_v27_champion_original_memory \
+		--verbose
+
+# Produce the preservation report from all available eval CSVs.
+# Safe to run at any point — missing CSVs are reported as "not yet evaluated".
+summarise-v27-preservation:
+	mkdir -p $(V27_OUT_DIR)
+	$(ENV) python scripts/summarise_v27_preservation.py \
+		--champion-csv        outputs/eval_v27_champion_adapter/best_of_3.csv \
+		--mltorch-csv         outputs/eval_v27_champion_adapter_mltorch/best_of_3.csv \
+		--aetherforge-csv     outputs/eval_v27_champion_adapter_aetherforge/best_of_3.csv \
+		--merged-csv          outputs/eval_v27_merged_champion/best_of_3.csv \
+		--no-memory-csv       outputs/eval_v27_champion_no_memory/best_of_3.csv \
+		--original-memory-csv outputs/eval_v27_champion_original_memory/best_of_3.csv \
+		--output-dir          $(V27_OUT_DIR)
+	@echo ""
+	@echo "Audit report: $(V27_OUT_DIR)/summary.md"
+	@echo "Per-task CSV: $(V27_OUT_DIR)/per_task_comparison.csv"
+	@echo "Failure diff: $(V27_OUT_DIR)/failure_diff.md"
+
+# ── v2.8 Champion System Enhancement ─────────────────────────────────────
+# Goal: improve 82.1% (23/28) merged champion + memory system without retraining.
+# Promotion rule: >= 24/28 = new champion; == 23/28 = tie; < 23/28 = reject.
+#
+# Current best: outputs/qwen15b_v27_champion_merged + memory/index_adapted
+# Failing 5: group_anagrams, merge_intervals, count_islands,
+#             median_two_sorted, tree_depth_tuple
+#
+# Run order:
+#   1. make eval-v28-current-champion       (reproduce 23/28 baseline)
+#   2. make eval-v28-no-memory              (control: memory lift)
+#   3. make eval-v28-memory-topk1           |
+#      make eval-v28-memory-topk3           | top-k ablation
+#      make eval-v28-memory-topk5           |
+#   4. make eval-v28-filtered-memory        (curated hard/medium-only index)
+#   5. make eval-v28-direct-answer-prompt   (DIRECT_ANSWER_SYSTEM prompt)
+#   6. make eval-v28-continuation-logic     (best-of-5 on 5 failing tasks)
+#   7. make summarise-v28
+
+V28_CHAMPION  := outputs/qwen15b_v27_champion_merged
+V28_MEM_INDEX := memory/index_adapted
+V28_HELDOUT   := data/heldout_code_agent_tasks.jsonl
+V28_OUT_DIR   := results/v28_champion_system
+
+.PHONY: eval-v28-current-champion \
+        eval-v28-no-memory \
+        eval-v28-memory-topk1 \
+        eval-v28-memory-topk3 \
+        eval-v28-memory-topk5 \
+        eval-v28-filtered-memory \
+        eval-v28-direct-answer-prompt \
+        eval-v28-continuation-logic \
+        summarise-v28
+
+# Baseline: reproduce the 23/28 merged champion + memory result.
+eval-v28-current-champion:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v28_current_champion \
+		--verbose
+
+# Control: merged champion WITHOUT memory.
+eval-v28-no-memory:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--output         outputs/eval_v28_no_memory \
+		--verbose
+
+# top-k ablation: 1, 3, 5 retrieved examples.
+eval-v28-memory-topk1:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   1 \
+		--output         outputs/eval_v28_memory_topk1 \
+		--verbose
+
+eval-v28-memory-topk3:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   3 \
+		--output         outputs/eval_v28_memory_topk3 \
+		--verbose
+
+eval-v28-memory-topk5:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   5 \
+		--output         outputs/eval_v28_memory_topk5 \
+		--verbose
+
+# Filtered memory: curated hard/medium-only index (see configs/v28_memory_retrieval.yaml).
+# Build index before running: python scripts/build_vector_memory.py
+#   --raw-dir memory/raw_adapted --index-dir memory/index_v28_filtered
+eval-v28-filtered-memory:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	@test -d memory/index_v28_filtered || \
+		(echo "ERROR: memory/index_v28_filtered not found — build the filtered index first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index memory/index_v28_filtered \
+		--memory-top-k   4 \
+		--output         outputs/eval_v28_filtered_memory \
+		--verbose
+
+# Direct-answer prompt: uses DIRECT_ANSWER_SYSTEM instead of STRICT_SYSTEM.
+eval-v28-direct-answer-prompt:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--mode          best_of_n --n 3 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   4 \
+		--prompt-variant direct_answer \
+		--output         outputs/eval_v28_direct_answer_prompt \
+		--verbose
+
+# Continuation logic: best-of-5 sampling focused on the 5 failing tasks.
+# Tests whether increased sampling resolves the capability gap.
+eval-v28-continuation-logic:
+	@test -d $(V28_CHAMPION) || \
+		(echo "ERROR: $(V28_CHAMPION) not found — run make merge-v27-champion first" && exit 1)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model      $(V28_CHAMPION) \
+		--tasks-file    $(V28_HELDOUT) \
+		--task-ids      group_anagrams merge_intervals count_islands \
+		                median_two_sorted tree_depth_tuple \
+		--mode          best_of_n --n 5 \
+		--scoring-mode  verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled --memory-index $(V28_MEM_INDEX) \
+		--memory-top-k   4 \
+		--output         outputs/eval_v28_continuation_logic \
+		--verbose
+
+# Produce the v2.8 enhancement report.
+summarise-v28:
+	mkdir -p $(V28_OUT_DIR)
+	$(ENV) python scripts/summarise_v28_champion_system.py \
+		--output-dir $(V28_OUT_DIR)
+	@echo ""
+	@echo "Summary : $(V28_OUT_DIR)/summary.md"
+	@echo "Per-task: $(V28_OUT_DIR)/per_task_comparison.csv"
+	@echo "Failures: $(V28_OUT_DIR)/failure_analysis.md"
+
+# ── v2.9 Memory Repair Split ──────────────────────────────────────────────
+# Architecture:
+#   Champion index  : memory/index_adapted          (99 records, PROTECTED)
+#   Repair raw      : memory/raw_v29_repair          (4 new verified records)
+#   Repair index    : memory/index_v29_repair        (champion + repair, 103 records)
+#   Diagnostic eval : same 28-task benchmark + repair index  (NOT a clean result)
+#   Clean eval      : data/v29_clean_generalisation_tasks.jsonl + repair index
+#
+# Promotion rule:
+#   Diagnostic score (any) on original benchmark  → DIAGNOSTIC label only
+#   Clean generalisation score                     → valid generalisation claim
+#   New 28-task champion                           → requires merging repair records
+#                                                    into index_adapted AND fresh eval
+#
+# tree_depth_tuple note: the task prompt has a broken assertion
+#   (claims ==3 for a case where the correct answer is 4).
+#   Repair record uses the correct value. Eval results for that task may vary.
+
+.PHONY: inspect-v29-retrieval build-v29-repair-memory \
+        eval-v29-repair-memory-diagnostic eval-v29-clean-memory-generalisation \
+        summarise-v29
+
+V29_CHAMPION  := outputs/qwen15b_v27_champion_merged
+V29_MEM_INDEX := memory/index_adapted
+V29_REPAIR_RAW  := memory/raw_v29_repair
+V29_REPAIR_IDX  := memory/index_v29_repair
+V29_HELDOUT   := data/heldout_code_agent_tasks.jsonl
+V29_CLEAN_SET := data/v29_clean_generalisation_tasks.jsonl
+V29_OUT_DIR   := results/v29_memory_repair
+
+# ── inspect-v29-retrieval ─────────────────────────────────────────────────
+# Show k=4 hits for the 4 failing tasks from both champion and repair indexes.
+# Writes results/v29_memory_repair/retrieval_inspection.md
+inspect-v29-retrieval: $(V29_REPAIR_RAW)/repair_records.jsonl
+	@test -d $(V29_MEM_INDEX) || (echo "ERROR: champion index not found at $(V29_MEM_INDEX)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/inspect_v29_retrieval.py \
+		--champion-index $(V29_MEM_INDEX) \
+		--repair-raw-dir $(V29_REPAIR_RAW) \
+		--repair-index   $(V29_REPAIR_IDX) \
+		--output-md      $(V29_OUT_DIR)/retrieval_inspection.md \
+		--top-k 4
+	@echo "Inspection: $(V29_OUT_DIR)/retrieval_inspection.md"
+
+# ── build-v29-repair-memory ───────────────────────────────────────────────
+# Validate repair records and build memory/index_v29_repair
+# (champion records + 4 repair examples, champion index untouched)
+build-v29-repair-memory: $(V29_REPAIR_RAW)/repair_records.jsonl
+	$(ENV) python scripts/inspect_v29_retrieval.py \
+		--champion-index $(V29_MEM_INDEX) \
+		--repair-raw-dir $(V29_REPAIR_RAW) \
+		--repair-index   $(V29_REPAIR_IDX) \
+		--output-md      $(V29_OUT_DIR)/retrieval_inspection.md \
+		--rebuild-repair-index \
+		--top-k 4
+	@echo "Repair index: $(V29_REPAIR_IDX)"
+	@echo "Inspection  : $(V29_OUT_DIR)/retrieval_inspection.md"
+
+# ── eval-v29-repair-memory-diagnostic ────────────────────────────────────
+# Evaluate merged champion + repair index on the original 28-task benchmark.
+# DIAGNOSTIC LABEL: adds task-specific repair records for known failing tasks.
+# Score on this run is NOT a clean champion promotion.
+eval-v29-repair-memory-diagnostic: build-v29-repair-memory
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_HELDOUT)  || (echo "ERROR: heldout tasks not found at $(V29_HELDOUT)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_HELDOUT) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_REPAIR_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_repair_memory_diagnostic \
+		--verbose
+	@echo "DIAGNOSTIC — score on original 28-task benchmark with repair records added."
+	@echo "NOT a clean champion promotion. See $(V29_OUT_DIR)/claim_boundary.md"
+
+# ── eval-v29-clean-memory-generalisation ─────────────────────────────────
+# Evaluate merged champion + repair index on the clean generalisation set.
+# These 5 tasks are similar to the 4 failing tasks but have different names
+# and examples — never seen during training or memory repair.
+eval-v29-clean-memory-generalisation: build-v29-repair-memory
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_CLEAN_SET) || (echo "ERROR: clean task set not found at $(V29_CLEAN_SET)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_CLEAN_SET) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_REPAIR_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_clean_generalisation \
+		--verbose
+	@echo "CLEAN — score on separate untouched test set. Valid generalisation claim."
+
+# ── summarise-v29 ─────────────────────────────────────────────────────────
+summarise-v29:
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/summarise_v29_memory_repair.py \
+		--diagnostic-csv $(V29_OUT_DIR)/diagnostic_repair_results.csv \
+		--clean-csv      $(V29_OUT_DIR)/clean_generalisation_results.csv \
+		--output-dir     $(V29_OUT_DIR)
+	@echo "Summary      : $(V29_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V29_OUT_DIR)/claim_boundary.md"
+
+# ── v2.9 Repair-Index Promotion (index_adapted_v29) ───────────────────────
+# Builds memory/index_adapted_v29 = champion records + 4 repair examples,
+# then runs A/B comparison against the clean champion (memory/index_adapted).
+#
+# Architecture:
+#   Lane 1: memory/index_adapted      (99 rec, clean champion baseline)
+#   Lane 2: memory/index_adapted_v29  (103 rec, repair-enhanced)
+#
+# Claim boundary:
+#   Lane 2 on 28-task benchmark = REPAIR-INDEX DIAGNOSTIC (not clean champion)
+#   Lane 2 on clean gen tasks   = valid generalisation signal
+
+.PHONY: build-v29-adapted-repair-index \
+        eval-v29-adapted-repair-index \
+        eval-v29-adapted-repair-clean-generalisation \
+        summarise-v29-promotion
+
+V29_ADAPTED_IDX := memory/index_adapted_v29
+V29_ADAPTED_RAW := memory/raw_adapted_v29
+
+# ── build-v29-adapted-repair-index ───────────────────────────────────────
+# Combine memory/raw_adapted + memory/raw_v29_repair/repair_records.jsonl
+# into memory/raw_adapted_v29/, then build memory/index_adapted_v29.
+# Keeps memory/index_adapted completely untouched.
+build-v29-adapted-repair-index:
+	@test -d memory/raw_adapted || (echo "ERROR: memory/raw_adapted not found (locally-excluded dir)" && exit 1)
+	@test -f $(V29_REPAIR_RAW)/repair_records.jsonl || \
+		(echo "ERROR: repair records not found at $(V29_REPAIR_RAW)/repair_records.jsonl" && exit 1)
+	@mkdir -p $(V29_ADAPTED_RAW)
+	@cp memory/raw_adapted/*.jsonl $(V29_ADAPTED_RAW)/
+	@cp $(V29_REPAIR_RAW)/repair_records.jsonl $(V29_ADAPTED_RAW)/v29_repair_records.jsonl
+	$(ENV) python scripts/build_vector_memory.py \
+		--raw-dir  $(V29_ADAPTED_RAW) \
+		--index-dir $(V29_ADAPTED_IDX)
+	@echo "Repair-enhanced index: $(V29_ADAPTED_IDX) (103 records)"
+	@echo "Champion index stays: $(V29_MEM_INDEX) (UNTOUCHED)"
+
+# ── eval-v29-adapted-repair-index ────────────────────────────────────────
+# Run merged champion + repair-enhanced index on the full 28-task benchmark.
+# REPAIR-INDEX DIAGNOSTIC: NOT a clean held-out champion.
+eval-v29-adapted-repair-index: build-v29-adapted-repair-index
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_HELDOUT)  || (echo "ERROR: heldout tasks not found at $(V29_HELDOUT)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_HELDOUT) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_ADAPTED_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_adapted_repair_index \
+		--verbose
+	@echo "REPAIR-INDEX DIAGNOSTIC — not a clean champion. See claim_boundary.md"
+
+# ── eval-v29-adapted-repair-clean-generalisation ─────────────────────────
+# Run merged champion + repair-enhanced index on the clean generalisation set.
+eval-v29-adapted-repair-clean-generalisation: build-v29-adapted-repair-index
+	@test -d $(V29_CHAMPION) || (echo "ERROR: champion model not found at $(V29_CHAMPION)" && exit 1)
+	@test -f $(V29_CLEAN_SET) || (echo "ERROR: clean task set not found at $(V29_CLEAN_SET)" && exit 1)
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V29_CHAMPION) \
+		--tasks-file $(V29_CLEAN_SET) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--memory-index $(V29_ADAPTED_IDX) \
+		--memory-top-k 4 \
+		--output outputs/eval_v29_adapted_clean_generalisation \
+		--verbose
+	@echo "CLEAN — valid generalisation signal on separate untouched test set."
+
+# ── summarise-v29-promotion ───────────────────────────────────────────────
+summarise-v29-promotion:
+	@mkdir -p $(V29_OUT_DIR)
+	$(ENV) python scripts/summarise_v29_promotion.py \
+		--adapted-v29-28task-csv $(V29_OUT_DIR)/adapted_v29_28task_results.csv \
+		--adapted-v29-clean-csv  $(V29_OUT_DIR)/adapted_v29_clean_results.csv \
+		--output-dir             $(V29_OUT_DIR)
+	@echo "Promotion summary: $(V29_OUT_DIR)/promotion_summary.md"
 
 # ── SWE-bench Lite evaluations ────────────────────────────────────────────
 # Phase 1: stub format validation.

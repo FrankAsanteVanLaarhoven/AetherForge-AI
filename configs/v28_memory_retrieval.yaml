@@ -1,0 +1,78 @@
+# v2.8 Memory Retrieval Configuration
+# Controls memory index selection and top-k for each v2.8 experiment.
+#
+# current best system: merged champion + memory/index_adapted, top_k=4 → 23/28 = 82.1%
+# promotion threshold: 24/28
+
+experiments:
+  current_champion:
+    index: memory/index_adapted
+    top_k: 4
+    description: "Baseline — reproduces the 23/28 merged champion result"
+
+  no_memory:
+    index: null
+    top_k: 0
+    description: "Control — how much of the 82.1% is pure retrieval gain"
+
+  memory_topk1:
+    index: memory/index_adapted
+    top_k: 1
+    description: "Single most-relevant example; minimal noise"
+
+  memory_topk3:
+    index: memory/index_adapted
+    top_k: 3
+    description: "Three examples; balance between coverage and noise"
+
+  memory_topk5:
+    index: memory/index_adapted
+    top_k: 5
+    description: "Five examples; more context, higher risk of retrieval noise"
+
+  filtered_memory:
+    index: memory/index_v28_filtered
+    top_k: 4
+    description: >
+      Curated index built from verified passes on hard/medium tasks only.
+      Excludes basic-category examples that add noise for hard tasks.
+      Build with: python scripts/build_vector_memory.py
+        --raw-dir memory/raw_adapted
+        --index-dir memory/index_v28_filtered
+        --categories hard medium
+    note: "index_v28_filtered must be built before this experiment"
+
+  direct_answer_prompt:
+    index: memory/index_adapted
+    top_k: 4
+    prompt_variant: direct_answer
+    description: "DIRECT_ANSWER_SYSTEM replaces STRICT_SYSTEM — shorter, more concise contract"
+
+  continuation_logic:
+    index: memory/index_adapted
+    top_k: 4
+    mode: best_of_n
+    n: 5
+    task_ids:
+      - group_anagrams
+      - merge_intervals
+      - count_islands
+      - median_two_sorted
+      - tree_depth_tuple
+    description: >
+      Focus 5 attempts on the 5 tasks that still fail in the 23/28 system.
+      Tests whether increased sampling covers the capability gap.
+
+# Failing tasks in current 23/28 champion (merged + memory/index_adapted)
+# These are the targets for v2.8 improvement.
+current_champion_failures:
+  - id: group_anagrams
+    category: medium
+  - id: merge_intervals
+    category: hard
+  - id: count_islands
+    category: hard
+  - id: median_two_sorted
+    category: hard
+  - id: tree_depth_tuple
+    category: hard
