@@ -2131,6 +2131,81 @@ summarise-v219-structured:
 	@echo "v2.19 summary : $(V219_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V219_OUT_DIR)/claim_boundary.md"
 
+# ── v2.19b Family-Targeted Memory Coverage ────────────────────────────────
+# Tests the v2.19 finding that the bottleneck is memory COVERAGE. Adds 16 verified
+# same-family-DIFFERENT-task repair records (interval/tree/rle/dict; contamination-
+# guarded — names disjoint from the 32 benchmark tasks) to the structured pool, holds
+# the encoder fixed, and re-runs the structured-dense audit. Protected indexes untouched.
+# structured-hybrid is omitted: its shortlist gate is the original 99-record pool, so it
+# cannot surface the new records (testing it fairly needs a combined store-index; deferred).
+#
+# Usage:
+#   make build-v219b-family-memory-index
+#   make eval-v219b-structured-dense-32-run1    (run2, run3)
+#   make summarise-v219b-family
+
+V219B_FAMILY_RECORDS := data/v219b_family_repair_records.jsonl
+V219B_STRUCT_RECORDS := memory/structured_v219b/records.jsonl
+V219B_STRUCT_INDEX   := memory/dense_index_v219b_structured
+V219B_OUT_DIR        := results/v219b_family_memory
+
+.PHONY: build-v219b-family-memory-index \
+        eval-v219b-structured-dense-32-run1 eval-v219b-structured-dense-32-run2 \
+        eval-v219b-structured-dense-32-run3 \
+        summarise-v219b-family
+
+build-v219b-family-memory-index:
+	@test -d $(V219_BASELINE_INDEX) || (echo "ERROR: protected index not found at $(V219_BASELINE_INDEX)" && exit 1)
+	@test -d $(V219_ENCODER)        || (echo "ERROR: baseline encoder not found at $(V219_ENCODER)" && exit 1)
+	$(ENV) python scripts/build_v219b_family_records.py
+	$(ENV) python scripts/build_structured_memory_records.py \
+		--source-index $(V219_BASELINE_INDEX) \
+		--extra-jsonl $(V219B_FAMILY_RECORDS) \
+		--output $(V219B_STRUCT_RECORDS) \
+		--schema-doc $(V219B_OUT_DIR)/structured_record_schema.md
+	$(ENV) python scripts/build_dense_memory_index.py \
+		--memory-jsonl $(V219B_STRUCT_RECORDS) \
+		--output-dir $(V219B_STRUCT_INDEX) \
+		--dense-model $(V219_ENCODER) \
+		--batch-size 32 --device auto
+	@echo "v2.19b combined structured index built: $(V219B_STRUCT_INDEX)"
+
+# Template: generate structured-dense eval target for run $(1)
+define V219B_EVAL_RULE
+eval-v219b-structured-dense-32-run$(1):
+	@test -d $(V219_MODEL)         || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32)      || (echo "ERROR: task file not found at $(V219_TASKS_32)" && exit 1)
+	@test -d $(V219B_STRUCT_INDEX) || (echo "ERROR: index not found — run make build-v219b-family-memory-index" && exit 1)
+	@mkdir -p $(V219B_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py \
+		--hf-model $(V219_MODEL) \
+		--tasks-file $(V219_TASKS_32) \
+		--mode best_of_n --n 3 \
+		--scoring-mode verified_agent \
+		--agent-contract strict \
+		--stop-after-pass \
+		--memory-enabled \
+		--retrieval-mode structured \
+		--structured-index $(V219B_STRUCT_INDEX) \
+		--dense-model $(V219_ENCODER) \
+		--rerank-top-n $(V219_RERANK_N) \
+		--memory-top-k 4 \
+		--output outputs/eval_v219b_structured_dense_32_run$(1) \
+		--verbose
+	@echo "v2.19b structured-dense run $(1) complete."
+endef
+
+$(eval $(call V219B_EVAL_RULE,1))
+$(eval $(call V219B_EVAL_RULE,2))
+$(eval $(call V219B_EVAL_RULE,3))
+
+summarise-v219b-family:
+	@mkdir -p $(V219B_OUT_DIR)
+	$(ENV) python scripts/summarise_v219b_family_memory.py
+	@echo ""
+	@echo "v2.19b summary : $(V219B_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V219B_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

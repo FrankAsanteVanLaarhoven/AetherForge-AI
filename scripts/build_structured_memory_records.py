@@ -94,6 +94,10 @@ def main():
                     help="Protected source index directory (read-only)")
     ap.add_argument("--output", default="memory/structured_v219/records.jsonl",
                     help="Output JSONL path (gitignored)")
+    ap.add_argument("--extra-jsonl", default=None,
+                    help="Optional JSONL of additional authored records to merge in "
+                         "(e.g. v2.19b family-targeted repairs). Must carry task + "
+                         "corrected_tool_call + verified fields.")
     ap.add_argument("--schema-doc", default="results/v219_structured_memory/structured_record_schema.md",
                     help="Small committed schema/sample evidence file")
     args = ap.parse_args()
@@ -112,6 +116,21 @@ def main():
     print(f"[structured] Loaded {len(records)} verified records from {args.source_index}")
 
     structured = [build_structured_record(r) for r in records]
+
+    if args.extra_jsonl:
+        extra_path = Path(args.extra_jsonl)
+        extra = []
+        with open(extra_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                r = json.loads(line)
+                if r.get("verified"):
+                    extra.append(r)
+        structured.extend(build_structured_record(r) for r in extra)
+        print(f"[structured] Merged {len(extra)} extra authored records from {extra_path} "
+              f"(combined pool: {len(structured)})")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:

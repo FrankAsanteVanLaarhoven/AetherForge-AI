@@ -477,6 +477,10 @@ def dispatch_tool(call_str: str) -> str:
             args = json.loads(raw.replace("'", '"'))
         except Exception:
             return f"ERROR: invalid JSON in tool args: {raw!r}"
+    if not isinstance(args, dict):
+        # A non-object arg (bare string/number/list) would crash dict-expecting tools.
+        # Return a recoverable error observation instead, like other dispatch errors.
+        return f"ERROR: tool args must be a JSON object, got {type(args).__name__}: {raw!r}"
     return TOOLS[name](args)
 
 def _extract_pending_tool_call(
