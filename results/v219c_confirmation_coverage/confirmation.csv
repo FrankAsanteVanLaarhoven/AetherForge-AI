@@ -1,0 +1,3 @@
+phase,n_runs,totals,mean,std,min,max,runs_above_gate,runs_ge_22
+confirmation,10,22 22 17 19 17 24 19 19 20 19,19.80,2.14,17,24,8,3
+expanded,3,19 19 17,18.33,0.94,17,19,2,0

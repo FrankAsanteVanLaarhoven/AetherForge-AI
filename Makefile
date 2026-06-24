@@ -2206,6 +2206,96 @@ summarise-v219b-family:
 	@echo "v2.19b summary : $(V219B_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V219B_OUT_DIR)/claim_boundary.md"
 
+# ── v2.19c Confirmation + Targeted Coverage Expansion ─────────────────────
+# Phase 1: confirm the v2.19b combined-pool lift over many seeds (mean > 18.3 stable?).
+#          Reuses the v2.19b index directly (confirms that exact artifact).
+# Phase 2: author targeted same-family-different-task records for the families that did
+#          NOT convert in v2.19b (tree stable-fails, interval_union) — contamination-
+#          guarded, execution-verified.
+# Phase 3: build the EXPANDED pool (99 + v2.19b 16 + targeted) and re-run dense.
+# Encoder held fixed throughout. Protected indexes untouched.
+#
+# Usage:
+#   make eval-v219c-confirm-32-run1 ... run7   (Phase 1, or: make v219c-confirm-all)
+#   make build-v219c-expanded-index            (Phase 2+3 build)
+#   make eval-v219c-expanded-dense-32-run1 ... run3
+#   make summarise-v219c
+
+V219C_CONFIRM_INDEX   := $(V219B_STRUCT_INDEX)
+V219C_TARGETED_RECORDS := data/v219c_targeted_repair_records.jsonl
+V219C_COMBINED_EXTRA  := memory/structured_v219c/combined_extra.jsonl
+V219C_STRUCT_RECORDS  := memory/structured_v219c/records.jsonl
+V219C_EXPANDED_INDEX  := memory/dense_index_v219c_confirm
+V219C_OUT_DIR         := results/v219c_confirmation_coverage
+
+_v219c_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V219_MODEL) \
+	--tasks-file $(V219_TASKS_32) \
+	--mode best_of_n --n 3 \
+	--scoring-mode verified_agent \
+	--agent-contract strict \
+	--stop-after-pass \
+	--memory-enabled \
+	--retrieval-mode structured \
+	--dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) \
+	--memory-top-k 4 \
+	--verbose
+
+.PHONY: build-v219c-expanded-index summarise-v219c v219c-confirm-all
+
+# Phase 1 confirmation template (confirms the v2.19b artifact directly)
+define V219C_CONFIRM_RULE
+.PHONY: eval-v219c-confirm-32-run$(1)
+eval-v219c-confirm-32-run$(1):
+	@test -d $(V219_MODEL)           || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -d $(V219C_CONFIRM_INDEX)  || (echo "ERROR: v2.19b index not found — run make build-v219b-family-memory-index" && exit 1)
+	@mkdir -p $(V219C_OUT_DIR)
+	$$(_v219c_eval) --structured-index $(V219C_CONFIRM_INDEX) \
+		--output outputs/eval_v219c_confirm_run$(1)
+	@echo "v2.19c confirmation run $(1) complete."
+endef
+$(foreach n,1 2 3 4 5 6 7,$(eval $(call V219C_CONFIRM_RULE,$(n))))
+
+# Phase 2+3: build expanded pool = 99 protected + v2.19b 16 + v2.19c targeted
+build-v219c-expanded-index:
+	@test -d $(V219_BASELINE_INDEX) || (echo "ERROR: protected index not found" && exit 1)
+	@test -d $(V219_ENCODER)        || (echo "ERROR: baseline encoder not found" && exit 1)
+	$(ENV) python scripts/build_v219c_targeted_records.py
+	@mkdir -p memory/structured_v219c
+	cat $(V219B_FAMILY_RECORDS) $(V219C_TARGETED_RECORDS) > $(V219C_COMBINED_EXTRA)
+	$(ENV) python scripts/build_structured_memory_records.py \
+		--source-index $(V219_BASELINE_INDEX) \
+		--extra-jsonl $(V219C_COMBINED_EXTRA) \
+		--output $(V219C_STRUCT_RECORDS) \
+		--schema-doc $(V219C_OUT_DIR)/structured_record_schema.md
+	$(ENV) python scripts/build_dense_memory_index.py \
+		--memory-jsonl $(V219C_STRUCT_RECORDS) \
+		--output-dir $(V219C_EXPANDED_INDEX) \
+		--dense-model $(V219_ENCODER) \
+		--batch-size 32 --device auto
+	@echo "v2.19c expanded index built: $(V219C_EXPANDED_INDEX)"
+
+# Phase 3 expanded-pool dense eval template
+define V219C_EXPANDED_RULE
+.PHONY: eval-v219c-expanded-dense-32-run$(1)
+eval-v219c-expanded-dense-32-run$(1):
+	@test -d $(V219_MODEL)          || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -d $(V219C_EXPANDED_INDEX) || (echo "ERROR: expanded index not found — run make build-v219c-expanded-index" && exit 1)
+	@mkdir -p $(V219C_OUT_DIR)
+	$$(_v219c_eval) --structured-index $(V219C_EXPANDED_INDEX) \
+		--output outputs/eval_v219c_expanded_dense_32_run$(1)
+	@echo "v2.19c expanded-dense run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V219C_EXPANDED_RULE,$(n))))
+
+summarise-v219c:
+	@mkdir -p $(V219C_OUT_DIR)
+	$(ENV) python scripts/summarise_v219c_confirmation.py
+	@echo ""
+	@echo "v2.19c summary : $(V219C_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V219C_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 
