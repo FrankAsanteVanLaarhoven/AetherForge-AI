@@ -1,0 +1,6 @@
+metric,count,n_trajectories,rate
+plan,108,108,1.00
+base_case,108,108,1.00
+combine,108,108,1.00
+minimal_test,104,108,0.96
+repair,28,108,0.26

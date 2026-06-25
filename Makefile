@@ -2296,6 +2296,74 @@ summarise-v219c:
 	@echo "v2.19c summary : $(V219C_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V219C_OUT_DIR)/claim_boundary.md"
 
+# ── v2.21 ForgeReasoningCore Tool-Action Curriculum ───────────────────────
+# v2.19c proved tree-family failures are reasoning/control-bound (relevant memory is
+# retrieved but the model still fails). v2.21 tests an EXECUTION-PLAN prompt (plan ->
+# code -> test -> repair -> final) on top of the SAME v2.19c expanded retrieval, isolating
+# the prompt/control variable. Control = v2.19c expanded dense WITHOUT the plan prompt.
+# No new index, no model weights. Protected indexes untouched.
+#
+# Usage:
+#   make eval-v221-reasoning-tree-32-run1   (run2, run3)
+#   make eval-v221-tree-stablefails-run1    (run2, run3)
+#   make summarise-v221-reasoning
+
+V221_INDEX   := $(V219C_EXPANDED_INDEX)
+V221_OUT_DIR := results/v221_reasoning_curriculum
+V221_TREE_STABLEFAILS := v210_tree_from_list v210_tree_max_path_sum v210_tree_serialize v210_tree_width
+
+_v221_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V219_MODEL) \
+	--mode best_of_n --n 3 \
+	--scoring-mode verified_agent \
+	--agent-contract strict \
+	--stop-after-pass \
+	--execution-plan-mode \
+	--memory-enabled \
+	--retrieval-mode structured \
+	--structured-index $(V221_INDEX) \
+	--dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) \
+	--memory-top-k 4 \
+	--verbose
+
+.PHONY: summarise-v221-reasoning
+
+# Full 32-task with execution-plan mode
+define V221_FULL_RULE
+.PHONY: eval-v221-reasoning-tree-32-run$(1)
+eval-v221-reasoning-tree-32-run$(1):
+	@test -d $(V219_MODEL)  || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32) || (echo "ERROR: task file not found" && exit 1)
+	@test -d $(V221_INDEX)  || (echo "ERROR: v2.19c index not found — run make build-v219c-expanded-index" && exit 1)
+	@mkdir -p $(V221_OUT_DIR)
+	$$(_v221_eval) --tasks-file $(V219_TASKS_32) \
+		--output outputs/eval_v221_reasoning_tree_32_run$(1)
+	@echo "v2.21 reasoning-tree-32 run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V221_FULL_RULE,$(n))))
+
+# Isolated persistent tree stable-fails (best-of-3 each)
+define V221_SUBSET_RULE
+.PHONY: eval-v221-tree-stablefails-run$(1)
+eval-v221-tree-stablefails-run$(1):
+	@test -d $(V219_MODEL) || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -d $(V221_INDEX) || (echo "ERROR: v2.19c index not found — run make build-v219c-expanded-index" && exit 1)
+	@mkdir -p $(V221_OUT_DIR)
+	$$(_v221_eval) --tasks-file $(V219_TASKS_32) \
+		--task-ids $(V221_TREE_STABLEFAILS) \
+		--output outputs/eval_v221_tree_stablefails_run$(1)
+	@echo "v2.21 tree-stablefails run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V221_SUBSET_RULE,$(n))))
+
+summarise-v221-reasoning:
+	@mkdir -p $(V221_OUT_DIR)
+	$(ENV) python scripts/summarise_v221_reasoning.py
+	@echo ""
+	@echo "v2.21 summary : $(V221_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V221_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

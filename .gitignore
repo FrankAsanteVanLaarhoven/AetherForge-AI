@@ -42,6 +42,7 @@ results/*
 !results/v219_structured_memory/
 !results/v219b_family_memory/
 !results/v219c_confirmation_coverage/
+!results/v221_reasoning_curriculum/
 outputs/
 memory/index/
 memory/manifests/

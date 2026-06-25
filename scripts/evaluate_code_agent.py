@@ -1139,6 +1139,10 @@ def main():
     ap.add_argument("--stop-after-pass", action="store_true",
                     help="Terminate the agent loop immediately when OBSERVATION: PASS "
                          "is received (normal verified termination, not repair)")
+    ap.add_argument("--execution-plan-mode", action="store_true",
+                    help="v2.21 ForgeReasoningCore: use the EXECUTION_PLAN system prompt "
+                         "(PLAN -> code -> test -> repair -> final). Targets reasoning/"
+                         "control-bound failures. Overrides --agent-contract/--prompt-variant.")
     ap.add_argument("--memory-enabled", action="store_true",
                     help="Enable offline vector memory retrieval")
     ap.add_argument("--memory-index",   default="memory/index",
@@ -1220,6 +1224,10 @@ def main():
     if args.prompt_variant == "direct_answer":
         from scripts.agent_loop import DIRECT_ANSWER_SYSTEM as _DIRECT_SYS
         eval_system_prompt = _DIRECT_SYS
+    if args.execution_plan_mode:
+        from scripts.agent_loop import EXECUTION_PLAN_SYSTEM as _PLAN_SYS
+        eval_system_prompt = _PLAN_SYS
+        print("[prompt] execution-plan mode enabled (v2.21 ForgeReasoningCore)")
 
     # ── Memory loading ─────────────────────────────────────────────────────
     memory_state = None

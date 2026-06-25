@@ -1,0 +1,4 @@
+cohort,runs,mean,std,note
+baseline,3,16.33,0.94,"no plan, original pool"
+v219c_expanded_control,3,18.33,0.94,"expanded pool, NO plan prompt"
+v221_execution_plan,3,18.33,1.89,expanded pool + execution-plan prompt
