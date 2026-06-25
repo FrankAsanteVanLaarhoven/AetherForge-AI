@@ -1,0 +1,3 @@
+cohort,tree_width_pass,n_runs,rate,aggregate_mean
+v221_full_prompt,6,6,1.00,18.3
+v221b_ablation,9,9,1.00,18.67

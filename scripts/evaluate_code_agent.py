@@ -1143,6 +1143,9 @@ def main():
                     help="v2.21 ForgeReasoningCore: use the EXECUTION_PLAN system prompt "
                          "(PLAN -> code -> test -> repair -> final). Targets reasoning/"
                          "control-bound failures. Overrides --agent-contract/--prompt-variant.")
+    ap.add_argument("--plan-prompt-without-example", action="store_true",
+                    help="v2.21b ablation: execution-plan prompt with the worked example "
+                         "removed (same contract). Isolates plan structure from the example.")
     ap.add_argument("--memory-enabled", action="store_true",
                     help="Enable offline vector memory retrieval")
     ap.add_argument("--memory-index",   default="memory/index",
@@ -1228,6 +1231,10 @@ def main():
         from scripts.agent_loop import EXECUTION_PLAN_SYSTEM as _PLAN_SYS
         eval_system_prompt = _PLAN_SYS
         print("[prompt] execution-plan mode enabled (v2.21 ForgeReasoningCore)")
+    if args.plan_prompt_without_example:
+        from scripts.agent_loop import EXECUTION_PLAN_NOEXAMPLE_SYSTEM as _PLAN_NOEX
+        eval_system_prompt = _PLAN_NOEX
+        print("[prompt] execution-plan ablation enabled (v2.21b: no worked example)")
 
     # ── Memory loading ─────────────────────────────────────────────────────
     memory_state = None

@@ -43,6 +43,7 @@ results/*
 !results/v219b_family_memory/
 !results/v219c_confirmation_coverage/
 !results/v221_reasoning_curriculum/
+!results/v221b_tree_width_ablation/
 outputs/
 memory/index/
 memory/manifests/

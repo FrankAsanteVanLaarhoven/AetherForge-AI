@@ -2364,6 +2364,70 @@ summarise-v221-reasoning:
 	@echo "v2.21 summary : $(V221_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V221_OUT_DIR)/claim_boundary.md"
 
+# ── v2.21b Tree-Width Planning Ablation ───────────────────────────────────
+# Controlled ablation: the EXECUTION_PLAN prompt with the worked example REMOVED (same
+# contract, same v2.19c retrieval). Tests whether the v2.21 tree_width conversion (6/6) came
+# from the plan structure or from the worked example. No weights, no new index.
+#
+# Usage:
+#   make eval-v221b-tree-stablefails-run1 ... run6
+#   make eval-v221b-reasoning-tree-32-run1 ... run3
+#   make summarise-v221b-ablation
+
+V221B_OUT_DIR := results/v221b_tree_width_ablation
+
+_v221b_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V219_MODEL) \
+	--mode best_of_n --n 3 \
+	--scoring-mode verified_agent \
+	--agent-contract strict \
+	--stop-after-pass \
+	--plan-prompt-without-example \
+	--memory-enabled \
+	--retrieval-mode structured \
+	--structured-index $(V221_INDEX) \
+	--dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) \
+	--memory-top-k 4 \
+	--verbose
+
+.PHONY: summarise-v221b-ablation
+
+# Tree stable-fails under ablation (6 runs for a robust tree_width estimate)
+define V221B_SUBSET_RULE
+.PHONY: eval-v221b-tree-stablefails-run$(1)
+eval-v221b-tree-stablefails-run$(1):
+	@test -d $(V219_MODEL) || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -d $(V221_INDEX) || (echo "ERROR: v2.19c index not found — run make build-v219c-expanded-index" && exit 1)
+	@mkdir -p $(V221B_OUT_DIR)
+	$$(_v221b_eval) --tasks-file $(V219_TASKS_32) \
+		--task-ids $(V221_TREE_STABLEFAILS) \
+		--output outputs/eval_v221b_tree_stablefails_run$(1)
+	@echo "v2.21b ablation tree-stablefails run $(1) complete."
+endef
+$(foreach n,1 2 3 4 5 6,$(eval $(call V221B_SUBSET_RULE,$(n))))
+
+# Full 32-task under ablation (aggregate + regressions)
+define V221B_FULL_RULE
+.PHONY: eval-v221b-reasoning-tree-32-run$(1)
+eval-v221b-reasoning-tree-32-run$(1):
+	@test -d $(V219_MODEL)  || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32) || (echo "ERROR: task file not found" && exit 1)
+	@test -d $(V221_INDEX)  || (echo "ERROR: v2.19c index not found" && exit 1)
+	@mkdir -p $(V221B_OUT_DIR)
+	$$(_v221b_eval) --tasks-file $(V219_TASKS_32) \
+		--output outputs/eval_v221b_reasoning_tree_32_run$(1)
+	@echo "v2.21b ablation reasoning-tree-32 run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V221B_FULL_RULE,$(n))))
+
+summarise-v221b-ablation:
+	@mkdir -p $(V221B_OUT_DIR)
+	$(ENV) python scripts/summarise_v221b_ablation.py
+	@echo ""
+	@echo "v2.21b summary : $(V221B_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V221B_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 
