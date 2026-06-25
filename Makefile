@@ -2495,6 +2495,68 @@ summarise-v222-repair:
 	@echo "v2.22 summary : $(V222_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V222_OUT_DIR)/claim_boundary.md"
 
+# ── v2.22b Repair-Signal Ablation (raw stderr vs structured VERIFIER) ──────
+# Single-variable ablation of v2.22: SAME repair budget + no-repeat + diagnostic-assert
+# contract, but the OBSERVATION is RAW stderr instead of the distilled VERIFIER block.
+# Attributes the v2.22 aggregate lift (22.0) to signal format vs repair discipline.
+#
+# Usage:
+#   make eval-v222b-repair-capbound-run1 (run2,3) ; eval-v222b-repair-32-run1 (run2,3)
+#   make summarise-v222b-ablation
+
+V222B_OUT_DIR := results/v222b_repair_signal_ablation
+
+_v222b_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V219_MODEL) \
+	--mode best_of_n --n 3 \
+	--scoring-mode verified_agent \
+	--agent-contract strict \
+	--stop-after-pass \
+	--verifier-repair --repair-raw-stderr \
+	--max-repair-iters $(V222_REPAIR_ITERS) \
+	--memory-enabled \
+	--retrieval-mode structured \
+	--structured-index $(V221_INDEX) \
+	--dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) \
+	--memory-top-k 4 \
+	--verbose
+
+.PHONY: summarise-v222b-ablation
+
+define V222B_CAP_RULE
+.PHONY: eval-v222b-repair-capbound-run$(1)
+eval-v222b-repair-capbound-run$(1):
+	@test -d $(V219_MODEL) || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -d $(V221_INDEX) || (echo "ERROR: v2.19c index not found — run make build-v219c-expanded-index" && exit 1)
+	@mkdir -p $(V222B_OUT_DIR)
+	$$(_v222b_eval) --tasks-file $(V219_TASKS_32) \
+		--task-ids $(V222_CAPBOUND) \
+		--output outputs/eval_v222b_repair_capbound_run$(1)
+	@echo "v2.22b raw-repair capbound run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V222B_CAP_RULE,$(n))))
+
+define V222B_FULL_RULE
+.PHONY: eval-v222b-repair-32-run$(1)
+eval-v222b-repair-32-run$(1):
+	@test -d $(V219_MODEL)  || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32) || (echo "ERROR: task file not found" && exit 1)
+	@test -d $(V221_INDEX)  || (echo "ERROR: v2.19c index not found" && exit 1)
+	@mkdir -p $(V222B_OUT_DIR)
+	$$(_v222b_eval) --tasks-file $(V219_TASKS_32) \
+		--output outputs/eval_v222b_repair_32_run$(1)
+	@echo "v2.22b raw-repair full-32 run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V222B_FULL_RULE,$(n))))
+
+summarise-v222b-ablation:
+	@mkdir -p $(V222B_OUT_DIR)
+	$(ENV) python scripts/summarise_v222b_ablation.py
+	@echo ""
+	@echo "v2.22b summary : $(V222B_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V222B_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

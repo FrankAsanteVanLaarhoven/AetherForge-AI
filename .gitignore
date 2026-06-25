@@ -45,6 +45,7 @@ results/*
 !results/v221_reasoning_curriculum/
 !results/v221b_tree_width_ablation/
 !results/v222_verifier_guided_repair/
+!results/v222b_repair_signal_ablation/
 outputs/
 memory/index/
 memory/manifests/

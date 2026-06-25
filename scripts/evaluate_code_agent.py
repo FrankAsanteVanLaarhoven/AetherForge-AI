@@ -885,7 +885,8 @@ def evaluate(model, tokenizer, tasks: list[dict], mode: str, n: int,
              memory_top_k: int = 4,
              retriever=None,
              verifier_repair: bool = False,
-             max_repair_iters: int = 3) -> list[dict]:
+             max_repair_iters: int = 3,
+             repair_raw_signal: bool = False) -> list[dict]:
     from scripts.agent_loop import run_agent, run_agent_best_of_n
 
     _mem_kwargs = {
@@ -894,6 +895,7 @@ def evaluate(model, tokenizer, tasks: list[dict], mode: str, n: int,
         "retriever": retriever,
         "verifier_repair": verifier_repair,
         "max_repair_iters": max_repair_iters,
+        "repair_raw_signal": repair_raw_signal,
     }
 
     results = []
@@ -1156,6 +1158,10 @@ def main():
                          "VERIFIER_REPAIR system prompt.")
     ap.add_argument("--max-repair-iters", type=int, default=3,
                     help="v2.22: max verifier-guided repair iterations per trajectory (default 3).")
+    ap.add_argument("--repair-raw-stderr", action="store_true",
+                    help="v2.22b ablation: with --verifier-repair, inject RAW stderr instead of "
+                         "the structured VERIFIER block (same budget + no-repeat). Isolates "
+                         "signal format.")
     ap.add_argument("--memory-enabled", action="store_true",
                     help="Enable offline vector memory retrieval")
     ap.add_argument("--memory-index",   default="memory/index",
@@ -1246,10 +1252,15 @@ def main():
         eval_system_prompt = _PLAN_NOEX
         print("[prompt] execution-plan ablation enabled (v2.21b: no worked example)")
     if args.verifier_repair:
-        from scripts.agent_loop import VERIFIER_REPAIR_SYSTEM as _VR_SYS
+        if args.repair_raw_stderr:
+            from scripts.agent_loop import VERIFIER_REPAIR_RAW_SYSTEM as _VR_SYS
+            print(f"[prompt] repair RAW-stderr ablation enabled (v2.22b, max_repair_iters="
+                  f"{args.max_repair_iters})")
+        else:
+            from scripts.agent_loop import VERIFIER_REPAIR_SYSTEM as _VR_SYS
+            print(f"[prompt] verifier-guided repair enabled (v2.22, max_repair_iters="
+                  f"{args.max_repair_iters})")
         eval_system_prompt = _VR_SYS
-        print(f"[prompt] verifier-guided repair enabled (v2.22, max_repair_iters="
-              f"{args.max_repair_iters})")
 
     # ── Memory loading ─────────────────────────────────────────────────────
     memory_state = None
@@ -1358,7 +1369,8 @@ def main():
                                 memory_top_k=args.memory_top_k,
                                 retriever=retriever,
                                 verifier_repair=args.verifier_repair,
-                                max_repair_iters=args.max_repair_iters)
+                                max_repair_iters=args.max_repair_iters,
+                                repair_raw_signal=args.repair_raw_stderr)
         all_run_results.append(("base", base_results))
         _save_csv(base_results, Path(args.output) / "base.csv", "base")
         del base_model  # free VRAM
@@ -1378,7 +1390,8 @@ def main():
                            memory_top_k=args.memory_top_k,
                            retriever=retriever,
                            verifier_repair=args.verifier_repair,
-                           max_repair_iters=args.max_repair_iters)
+                           max_repair_iters=args.max_repair_iters,
+                           repair_raw_signal=args.repair_raw_stderr)
         all_run_results.append((label, results))
         _save_csv(results, Path(args.output) / f"{label}.csv", label)
 

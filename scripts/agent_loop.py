@@ -921,6 +921,36 @@ never call task functions as tools.
 """)
 
 
+# v2.22b ablation: identical repair contract (plan + diagnostic asserts + bounded repair +
+# no-repeat) but the OBSERVATION is the RAW execution error output instead of the distilled
+# VERIFIER block. Single-variable change vs VERIFIER_REPAIR_SYSTEM = signal format.
+VERIFIER_REPAIR_RAW_SYSTEM = textwrap.dedent("""\
+You are AetherForge Code Agent. Plan, solve by executing code, then use the error output
+to repair precisely.
+
+CONTRACT:
+1. First a short PLAN block (no prose before it):
+     PLAN:
+       family: <task family>
+       pattern: <retrieved memory pattern you will reuse>
+       base_case: <the condition that stops the recursion/iteration>
+       combine: <how sub-results are combined>
+2. Then ONE TOOL_CALL: execute_code({"code": "..."}). The code MUST include the base case,
+   the combine step, and DIAGNOSTIC asserts of the form:
+     assert actual == expected, f"got {actual!r} want {expected!r}"
+   and end successful code with print('PASS').
+3. OBSERVATION is the raw execution output (a traceback on failure) injected by the
+   runtime — never write it yourself.
+4. If the OBSERVATION shows an error, write CRITIQUE: naming the EXACT failing assertion
+   and its got/want values from the traceback, then a CHANGED TOOL_CALL that fixes that
+   specific cause. Never resubmit identical code — make a real change on every repair.
+5. FINAL_ANSWER only after OBSERVATION: PASS.
+
+Rules: 4-space indentation; diagnostic asserts; end passing code with print('PASS');
+never call task functions as tools.
+""")
+
+
 def _verifier_extract_code(call_line: str) -> str:
     """Best-effort extraction of the execute_code payload's code string."""
     try:
@@ -1023,6 +1053,7 @@ def run_agent(
     retriever=None,
     verifier_repair: bool = False,
     max_repair_iters: int = 3,
+    repair_raw_signal: bool = False,
 ) -> AgentResult:
     """Run the agent loop.
 
@@ -1164,8 +1195,15 @@ def run_agent(
                 repeated = chash in seen_code_hashes
                 seen_code_hashes.add(chash)
                 repair_iters += 1
-                vsignal = build_verifier_signal(code, obs, repeated)
-                obs_block = f"\nOBSERVATION:\n{vsignal}\n"
+                if repair_raw_signal:
+                    raw = obs
+                    if repeated:
+                        raw += ("\n[REPEAT: you resubmitted IDENTICAL code. You MUST change "
+                                "the implementation, not retry the same call.]")
+                    obs_block = f"\nOBSERVATION: {raw}\n"
+                else:
+                    vsignal = build_verifier_signal(code, obs, repeated)
+                    obs_block = f"\nOBSERVATION:\n{vsignal}\n"
                 if verbose:
                     print(obs_block, end="", flush=True)
                 context += obs_block
@@ -1352,6 +1390,7 @@ def run_agent_best_of_n(
     retriever=None,
     verifier_repair: bool = False,
     max_repair_iters: int = 3,
+    repair_raw_signal: bool = False,
 ) -> AgentResult:
     """Generate up to N independent agent trajectories and return the best.
 
@@ -1382,6 +1421,7 @@ def run_agent_best_of_n(
             retriever=retriever,
             verifier_repair=verifier_repair,
             max_repair_iters=max_repair_iters,
+            repair_raw_signal=repair_raw_signal,
         )
         score = _score_result(result)
         candidates.append(result)
