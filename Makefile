@@ -2428,6 +2428,73 @@ summarise-v221b-ablation:
 	@echo "v2.21b summary : $(V221B_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V221B_OUT_DIR)/claim_boundary.md"
 
+# ── v2.22 Verifier-Guided Multi-Step Repair ───────────────────────────────
+# Targets the three CAPABILITY-BOUND tree tasks (fail despite 100% plan adherence in
+# v2.21/v2.21b). Adds a precise VERIFIER signal + bounded repair budget on top of the
+# execution-plan prompt. Same v2.19c retrieval; no weights; no new index.
+#
+# Usage:
+#   make eval-v222-repair-capbound-run1   (run2, run3)
+#   make eval-v222-repair-32-run1         (run2, run3)
+#   make summarise-v222-repair
+
+V222_CAPBOUND     := v210_tree_serialize v210_tree_from_list v210_tree_max_path_sum
+V222_REPAIR_ITERS ?= 3
+V222_OUT_DIR      := results/v222_verifier_guided_repair
+
+_v222_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V219_MODEL) \
+	--mode best_of_n --n 3 \
+	--scoring-mode verified_agent \
+	--agent-contract strict \
+	--stop-after-pass \
+	--verifier-repair \
+	--max-repair-iters $(V222_REPAIR_ITERS) \
+	--memory-enabled \
+	--retrieval-mode structured \
+	--structured-index $(V221_INDEX) \
+	--dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) \
+	--memory-top-k 4 \
+	--verbose
+
+.PHONY: summarise-v222-repair
+
+# Capability-bound subset under verifier-guided repair
+define V222_CAP_RULE
+.PHONY: eval-v222-repair-capbound-run$(1)
+eval-v222-repair-capbound-run$(1):
+	@test -d $(V219_MODEL) || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -d $(V221_INDEX) || (echo "ERROR: v2.19c index not found — run make build-v219c-expanded-index" && exit 1)
+	@mkdir -p $(V222_OUT_DIR)
+	$$(_v222_eval) --tasks-file $(V219_TASKS_32) \
+		--task-ids $(V222_CAPBOUND) \
+		--output outputs/eval_v222_repair_capbound_run$(1)
+	@echo "v2.22 repair capbound run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V222_CAP_RULE,$(n))))
+
+# Full-32 control (regression guard)
+define V222_FULL_RULE
+.PHONY: eval-v222-repair-32-run$(1)
+eval-v222-repair-32-run$(1):
+	@test -d $(V219_MODEL)  || (echo "ERROR: model not found at $(V219_MODEL)" && exit 1)
+	@test -f $(V219_TASKS_32) || (echo "ERROR: task file not found" && exit 1)
+	@test -d $(V221_INDEX)  || (echo "ERROR: v2.19c index not found" && exit 1)
+	@mkdir -p $(V222_OUT_DIR)
+	$$(_v222_eval) --tasks-file $(V219_TASKS_32) \
+		--output outputs/eval_v222_repair_32_run$(1)
+	@echo "v2.22 repair full-32 run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V222_FULL_RULE,$(n))))
+
+summarise-v222-repair:
+	@mkdir -p $(V222_OUT_DIR)
+	$(ENV) python scripts/summarise_v222_repair.py
+	@echo ""
+	@echo "v2.22 summary : $(V222_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V222_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

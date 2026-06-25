@@ -1,0 +1,5 @@
+metric,value,n_trajectories
+trajectories_with_verifier_signal,76,105
+avg_verifier_blocks_per_trajectory,1.07,105
+repaired_to_pass,61,105
+budget_exhausted,11,105

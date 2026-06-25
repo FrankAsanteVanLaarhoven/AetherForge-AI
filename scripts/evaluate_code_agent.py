@@ -883,13 +883,17 @@ def evaluate(model, tokenizer, tasks: list[dict], mode: str, n: int,
              stop_after_pass: bool = False,
              memory_state: dict = None,
              memory_top_k: int = 4,
-             retriever=None) -> list[dict]:
+             retriever=None,
+             verifier_repair: bool = False,
+             max_repair_iters: int = 3) -> list[dict]:
     from scripts.agent_loop import run_agent, run_agent_best_of_n
 
     _mem_kwargs = {
         "memory_state": memory_state,
         "memory_top_k": memory_top_k,
         "retriever": retriever,
+        "verifier_repair": verifier_repair,
+        "max_repair_iters": max_repair_iters,
     }
 
     results = []
@@ -1146,6 +1150,12 @@ def main():
     ap.add_argument("--plan-prompt-without-example", action="store_true",
                     help="v2.21b ablation: execution-plan prompt with the worked example "
                          "removed (same contract). Isolates plan structure from the example.")
+    ap.add_argument("--verifier-repair", action="store_true",
+                    help="v2.22: replace failed execute_code observations with a structured "
+                         "VERIFIER signal and run a bounded repair loop. Selects the "
+                         "VERIFIER_REPAIR system prompt.")
+    ap.add_argument("--max-repair-iters", type=int, default=3,
+                    help="v2.22: max verifier-guided repair iterations per trajectory (default 3).")
     ap.add_argument("--memory-enabled", action="store_true",
                     help="Enable offline vector memory retrieval")
     ap.add_argument("--memory-index",   default="memory/index",
@@ -1235,6 +1245,11 @@ def main():
         from scripts.agent_loop import EXECUTION_PLAN_NOEXAMPLE_SYSTEM as _PLAN_NOEX
         eval_system_prompt = _PLAN_NOEX
         print("[prompt] execution-plan ablation enabled (v2.21b: no worked example)")
+    if args.verifier_repair:
+        from scripts.agent_loop import VERIFIER_REPAIR_SYSTEM as _VR_SYS
+        eval_system_prompt = _VR_SYS
+        print(f"[prompt] verifier-guided repair enabled (v2.22, max_repair_iters="
+              f"{args.max_repair_iters})")
 
     # ── Memory loading ─────────────────────────────────────────────────────
     memory_state = None
@@ -1341,7 +1356,9 @@ def main():
                                 stop_after_pass=args.stop_after_pass,
                                 memory_state=memory_state,
                                 memory_top_k=args.memory_top_k,
-                                retriever=retriever)
+                                retriever=retriever,
+                                verifier_repair=args.verifier_repair,
+                                max_repair_iters=args.max_repair_iters)
         all_run_results.append(("base", base_results))
         _save_csv(base_results, Path(args.output) / "base.csv", "base")
         del base_model  # free VRAM
@@ -1359,7 +1376,9 @@ def main():
                            stop_after_pass=args.stop_after_pass,
                            memory_state=memory_state,
                            memory_top_k=args.memory_top_k,
-                           retriever=retriever)
+                           retriever=retriever,
+                           verifier_repair=args.verifier_repair,
+                           max_repair_iters=args.max_repair_iters)
         all_run_results.append((label, results))
         _save_csv(results, Path(args.output) / f"{label}.csv", label)
 

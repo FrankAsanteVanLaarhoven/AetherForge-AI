@@ -892,6 +892,101 @@ Rules: 4-space indentation; always include asserts; end passing code with print(
 never call task functions as tools.
 """)
 
+# v2.22 verifier-guided multi-step repair: plan, then repair against a precise VERIFIER
+# signal. Requires DIAGNOSTIC asserts so failures carry expected/actual values (the model's
+# own self-test — no reference solution, so the benchmark stays independent).
+VERIFIER_REPAIR_SYSTEM = textwrap.dedent("""\
+You are AetherForge Code Agent. Plan, solve by executing code, then use the VERIFIER
+feedback to repair precisely.
+
+CONTRACT:
+1. First a short PLAN block (no prose before it):
+     PLAN:
+       family: <task family>
+       pattern: <retrieved memory pattern you will reuse>
+       base_case: <the condition that stops the recursion/iteration>
+       combine: <how sub-results are combined>
+2. Then ONE TOOL_CALL: execute_code({"code": "..."}). The code MUST include the base case,
+   the combine step, and DIAGNOSTIC asserts of the form:
+     assert actual == expected, f"got {actual!r} want {expected!r}"
+   and end successful code with print('PASS').
+3. OBSERVATION is a VERIFIER block injected by the runtime — never write it yourself.
+4. If the VERIFIER reports status: FAIL, write CRITIQUE: naming the EXACT mismatch it shows
+   (its failing_check / detail), then a CHANGED TOOL_CALL that fixes that specific cause.
+   Never resubmit identical code — make a real change on every repair.
+5. FINAL_ANSWER only after OBSERVATION: PASS.
+
+Rules: 4-space indentation; diagnostic asserts; end passing code with print('PASS');
+never call task functions as tools.
+""")
+
+
+def _verifier_extract_code(call_line: str) -> str:
+    """Best-effort extraction of the execute_code payload's code string."""
+    try:
+        from memory.structured_common import parse_execute_code
+        return parse_execute_code(call_line)
+    except Exception:
+        m = re.search(r"execute_code\(\s*(\{.*\})\s*\)?\s*$", call_line or "", re.S)
+        if not m:
+            return ""
+        for raw in (m.group(1), m.group(1).replace("'", '"')):
+            try:
+                return json.loads(raw).get("code", "")
+            except Exception:
+                continue
+        return ""
+
+
+def build_verifier_signal(code: str, obs: str, repeated: bool = False) -> str:
+    """Turn a failed execute_code observation into a precise, structured VERIFIER block.
+
+    Deterministic; uses only the model's own code and its own test output (no reference
+    solution). Line numbers in the `python -c` traceback map back to the model's code, so
+    the failing source line can be shown.
+    """
+    src = (code or "").splitlines()
+
+    def _src_at(n: int) -> str:
+        return src[n - 1].strip() if 1 <= n <= len(src) else ""
+
+    line_ms = list(re.finditer(r"line (\d+)", obs or ""))
+    failing_src = _src_at(int(line_ms[-1].group(1))) if line_ms else ""
+
+    block = ["VERIFIER:", "  status: FAIL"]
+    if "AssertionError" in (obs or ""):
+        am = re.search(r"AssertionError:\s*(.*)", obs)
+        msg = am.group(1).strip() if am else ""
+        block.append("  category: assertion_mismatch")
+        if failing_src:
+            block.append(f"  failing_check: {failing_src}")
+        block.append("  detail: " + (msg if msg else
+                     "assertion was False with no message — write asserts as "
+                     "'assert actual == expected, f\"got {actual!r} want {expected!r}\"'"))
+        block.append("  guidance: the code ran but this check failed; fix the implementation "
+                     "so the check passes.")
+    elif re.search(r"\b\w*(?:Error|Exception):", obs or "") and (obs or "").startswith("ERROR"):
+        em = re.search(r"(\w*(?:Error|Exception)):\s*(.*)", obs)
+        block.append("  category: exception")
+        block.append(f"  exception: {em.group(1) if em else 'Error'}")
+        if failing_src:
+            block.append(f"  failing_line: {failing_src}")
+        if em and em.group(2).strip():
+            block.append(f"  detail: {em.group(2).strip()[:200]}")
+        block.append("  guidance: the code raised an exception; fix the cause shown above.")
+    elif "(no output)" in (obs or "") or not (obs or "").strip():
+        block.append("  category: no_output")
+        block.append("  detail: the code produced no output and did not print PASS.")
+        block.append("  guidance: add diagnostic asserts and end successful code with print('PASS').")
+    else:
+        block.append("  category: wrong_output")
+        block.append(f"  detail: {(obs or '').strip()[:200]}")
+        block.append("  guidance: the output did not satisfy the check; adjust the implementation.")
+    if repeated:
+        block.append("  REPEAT: you resubmitted IDENTICAL code. You MUST change the "
+                     "implementation, not retry the same call.")
+    return "\n".join(block)
+
 
 # ---------------------------------------------------------------------------
 # Agent loop
@@ -926,8 +1021,14 @@ def run_agent(
     memory_state: dict = None,
     memory_top_k: int = 4,
     retriever=None,
+    verifier_repair: bool = False,
+    max_repair_iters: int = 3,
 ) -> AgentResult:
     """Run the agent loop.
+
+    verifier_repair: v2.22 — replace a failed execute_code OBSERVATION with a structured
+    VERIFIER block, enforce a bounded repair budget (max_repair_iters), and reject identical
+    code resubmissions, so the model repairs against a precise signal.
 
     force_critique: if True and the model skips CRITIQUE: before FINAL_ANSWER,
     intercept and inject a CRITIQUE: prompt to make it self-check first.
@@ -985,6 +1086,8 @@ def run_agent(
     call_counts: dict[str, int] = {}
     consecutive_errs = 0
     final_ans        = ""
+    repair_iters     = 0          # v2.22 verifier-repair budget counter
+    seen_code_hashes: set[str] = set()
     # Ignore TOOL_CALL examples already present in the initial prompt.
     # Only execute TOOL_CALL markers generated after this point.
     last_processed_tool_pos = context.rfind("TOOL_CALL:")
@@ -1051,6 +1154,29 @@ def run_agent(
                 context += obs_block
                 final_ans = "Verified with execute_code: PASS."
                 break
+
+            # ── v2.22 verifier-guided repair ──────────────────────────────────
+            if (verifier_repair and "execute_code" in call_line
+                    and not obs.strip().startswith("PASS")):
+                import hashlib
+                code = _verifier_extract_code(call_line)
+                chash = hashlib.sha256((code or "").encode()).hexdigest()
+                repeated = chash in seen_code_hashes
+                seen_code_hashes.add(chash)
+                repair_iters += 1
+                vsignal = build_verifier_signal(code, obs, repeated)
+                obs_block = f"\nOBSERVATION:\n{vsignal}\n"
+                if verbose:
+                    print(obs_block, end="", flush=True)
+                context += obs_block
+                if repair_iters >= max_repair_iters:
+                    note = ("\n[SYSTEM HINT: repair budget exhausted after "
+                            f"{repair_iters} attempts. Emit your best FINAL_ANSWER.]\n")
+                    context += note
+                    if verbose:
+                        print(note, flush=True)
+                    break
+                continue
 
             if obs.startswith("ERROR"):
                 consecutive_errs += 1
@@ -1224,6 +1350,8 @@ def run_agent_best_of_n(
     memory_state: dict = None,
     memory_top_k: int = 4,
     retriever=None,
+    verifier_repair: bool = False,
+    max_repair_iters: int = 3,
 ) -> AgentResult:
     """Generate up to N independent agent trajectories and return the best.
 
@@ -1252,6 +1380,8 @@ def run_agent_best_of_n(
             memory_state=memory_state,
             memory_top_k=memory_top_k,
             retriever=retriever,
+            verifier_repair=verifier_repair,
+            max_repair_iters=max_repair_iters,
         )
         score = _score_result(result)
         candidates.append(result)
