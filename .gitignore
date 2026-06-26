@@ -46,6 +46,7 @@ results/*
 !results/v221b_tree_width_ablation/
 !results/v222_verifier_guided_repair/
 !results/v222b_repair_signal_ablation/
+!results/v223_tree_capability_adapter/
 outputs/
 memory/index/
 memory/manifests/

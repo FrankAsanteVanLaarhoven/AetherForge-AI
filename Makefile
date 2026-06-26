@@ -2557,6 +2557,89 @@ summarise-v222b-ablation:
 	@echo "v2.22b summary : $(V222B_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V222B_OUT_DIR)/claim_boundary.md"
 
+# ── v2.23 Targeted Tree Capability Adapter ────────────────────────────────
+# A small fresh LoRA trained on contamination-guarded same-family-different-task tree
+# repair traces, applied ON TOP of the MERGED champion (no LoRA-on-LoRA; champion frozen).
+# Evaluated under the v2.22 structured-verifier mode + v2.19c retrieval. Includes the
+# required adapter-WITHOUT-verifier ablation. No champion overwrite; protected indexes intact.
+#
+# Build the data + adapter first:
+#   make build-v223-tree-capability-data
+#   make train-v223-tree-adapter
+# Then:
+#   make eval-v223-hardtree-run1 (run2,3) ; eval-v223-full32-run1 (run2,3)
+#   make eval-v223-noverifier-run1 (run2,3) ; make summarise-v223
+
+V223_CHAMPION := $(V219_MODEL)
+V223_ADAPTER  := outputs/qwen15b_v223_tree_capability_adapter/final
+V223_DATA     := data/v223_tree_capability_records.jsonl
+V223_HARDTREE := v210_tree_serialize v210_tree_from_list v210_tree_max_path_sum
+V223_OUT_DIR  := results/v223_tree_capability_adapter
+
+.PHONY: build-v223-tree-capability-data train-v223-tree-adapter summarise-v223
+
+build-v223-tree-capability-data:
+	$(ENV) python scripts/build_v223_tree_capability_data.py
+	$(ENV) python scripts/check_v223_contamination.py
+
+train-v223-tree-adapter:
+	@test -s $(V223_DATA) || (echo "ERROR: $(V223_DATA) missing — run make build-v223-tree-capability-data" && exit 1)
+	@test -d $(V223_CHAMPION) || (echo "ERROR: merged champion not found at $(V223_CHAMPION)" && exit 1)
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model $(V223_CHAMPION) \
+		--training-file $(V223_DATA) \
+		--agent-contract strict \
+		--steps 50 --lr 1e-5 --batch-size 1 --grad-accum 8 --max-length 1024 \
+		--output-dir outputs/qwen15b_v223_tree_capability_adapter
+	@echo "v2.23 adapter trained: $(V223_ADAPTER) (champion NOT modified)"
+
+# adapter + structured verifier (the promoted inference config)
+_v223_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V223_CHAMPION) --hf-lora $(V223_ADAPTER) \
+	--tasks-file $(V219_TASKS_32) \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--verifier-repair --max-repair-iters 3 \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+# ablation: adapter WITHOUT the structured verifier (plain execution-plan mode)
+_v223_eval_noverif = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V223_CHAMPION) --hf-lora $(V223_ADAPTER) \
+	--tasks-file $(V219_TASKS_32) \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--execution-plan-mode \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+define V223_RULE
+.PHONY: eval-v223-hardtree-run$(1) eval-v223-full32-run$(1) eval-v223-noverifier-run$(1)
+eval-v223-hardtree-run$(1):
+	@test -d $(V223_ADAPTER) || (echo "ERROR: adapter not found — run make train-v223-tree-adapter" && exit 1)
+	@mkdir -p $(V223_OUT_DIR)
+	$$(_v223_eval) --task-ids $(V223_HARDTREE) --output outputs/eval_v223_hardtree_run$(1)
+	@echo "v2.23 hardtree run $(1) complete."
+eval-v223-full32-run$(1):
+	@test -d $(V223_ADAPTER) || (echo "ERROR: adapter not found — run make train-v223-tree-adapter" && exit 1)
+	@mkdir -p $(V223_OUT_DIR)
+	$$(_v223_eval) --output outputs/eval_v223_full32_run$(1)
+	@echo "v2.23 full32 run $(1) complete."
+eval-v223-noverifier-run$(1):
+	@test -d $(V223_ADAPTER) || (echo "ERROR: adapter not found — run make train-v223-tree-adapter" && exit 1)
+	@mkdir -p $(V223_OUT_DIR)
+	$$(_v223_eval_noverif) --task-ids $(V223_HARDTREE) --output outputs/eval_v223_noverifier_run$(1)
+	@echo "v2.23 no-verifier ablation run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V223_RULE,$(n))))
+
+summarise-v223:
+	@mkdir -p $(V223_OUT_DIR)
+	$(ENV) python scripts/summarise_v223_adapter.py
+	@echo ""
+	@echo "v2.23 summary : $(V223_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V223_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 
