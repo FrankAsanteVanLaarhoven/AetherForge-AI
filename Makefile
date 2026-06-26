@@ -2640,6 +2640,80 @@ summarise-v223:
 	@echo "v2.23 summary : $(V223_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V223_OUT_DIR)/claim_boundary.md"
 
+# ── v2.23b Scaled Tree Capability Adapter ─────────────────────────────────
+# Scales the v2.23 pilot: ~2x data (94 records, 27 tasks) + 3x steps (150). Same
+# contamination guard, regression gate, separate adapter, champion untouched. Tests
+# whether the residual hard tasks are data-limited or at a capability ceiling.
+#
+#   make build-v223b-scaled-data ; make train-v223b-scaled-adapter
+#   make eval-v223b-hardtree-run1 (2,3) ; eval-v223b-full32-run1 (2,3) ; eval-v223b-noverifier-run1 (2,3)
+#   make summarise-v223b
+
+V223B_DATA    := data/v223b_tree_capability_scaled.jsonl
+V223B_ADAPTER := outputs/qwen15b_v223b_scaled_adapter/final
+V223B_OUT_DIR := results/v223b_scaled_tree_capability
+
+.PHONY: build-v223b-scaled-data train-v223b-scaled-adapter summarise-v223b
+
+build-v223b-scaled-data:
+	$(ENV) python scripts/build_v223b_scaled_data.py
+	$(ENV) python scripts/check_v223_contamination.py
+
+train-v223b-scaled-adapter:
+	@test -s $(V223B_DATA)    || (echo "ERROR: $(V223B_DATA) missing — run make build-v223b-scaled-data" && exit 1)
+	@test -d $(V223_CHAMPION) || (echo "ERROR: merged champion not found" && exit 1)
+	$(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model $(V223_CHAMPION) --training-file $(V223B_DATA) \
+		--agent-contract strict \
+		--steps 150 --lr 1e-5 --batch-size 1 --grad-accum 8 --max-length 1024 \
+		--output-dir outputs/qwen15b_v223b_scaled_adapter
+	@echo "v2.23b scaled adapter trained: $(V223B_ADAPTER) (champion NOT modified)"
+
+_v223b_eval = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V223_CHAMPION) --hf-lora $(V223B_ADAPTER) \
+	--tasks-file $(V219_TASKS_32) \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--verifier-repair --max-repair-iters 3 \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+_v223b_eval_noverif = $(ENV) python scripts/evaluate_code_agent.py \
+	--hf-model $(V223_CHAMPION) --hf-lora $(V223B_ADAPTER) \
+	--tasks-file $(V219_TASKS_32) \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--execution-plan-mode \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+define V223B_RULE
+.PHONY: eval-v223b-hardtree-run$(1) eval-v223b-full32-run$(1) eval-v223b-noverifier-run$(1)
+eval-v223b-hardtree-run$(1):
+	@test -d $(V223B_ADAPTER) || (echo "ERROR: adapter not found — run make train-v223b-scaled-adapter" && exit 1)
+	@mkdir -p $(V223B_OUT_DIR)
+	$$(_v223b_eval) --task-ids $(V223_HARDTREE) --output outputs/eval_v223b_hardtree_run$(1)
+	@echo "v2.23b hardtree run $(1) complete."
+eval-v223b-full32-run$(1):
+	@test -d $(V223B_ADAPTER) || (echo "ERROR: adapter not found — run make train-v223b-scaled-adapter" && exit 1)
+	@mkdir -p $(V223B_OUT_DIR)
+	$$(_v223b_eval) --output outputs/eval_v223b_full32_run$(1)
+	@echo "v2.23b full32 run $(1) complete."
+eval-v223b-noverifier-run$(1):
+	@test -d $(V223B_ADAPTER) || (echo "ERROR: adapter not found — run make train-v223b-scaled-adapter" && exit 1)
+	@mkdir -p $(V223B_OUT_DIR)
+	$$(_v223b_eval_noverif) --task-ids $(V223_HARDTREE) --output outputs/eval_v223b_noverifier_run$(1)
+	@echo "v2.23b no-verifier ablation run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V223B_RULE,$(n))))
+
+summarise-v223b:
+	@mkdir -p $(V223B_OUT_DIR)
+	$(ENV) python scripts/summarise_v223b_scaled.py
+	@echo ""
+	@echo "v2.23b summary : $(V223B_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V223B_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

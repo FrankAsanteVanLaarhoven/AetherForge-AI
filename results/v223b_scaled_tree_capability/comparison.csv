@@ -1,0 +1,4 @@
+cohort,data,steps,full32_mean,hard_conversions
+champion+verifier (v2.22),-,-,22.0,0
+pilot adapter (v2.23),49,50,22.7,0
+scaled adapter (v2.23b),94,150,20.67,0
