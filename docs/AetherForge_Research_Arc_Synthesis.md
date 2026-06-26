@@ -121,9 +121,11 @@ configuration** candidate or an **additive adapter** — never a champion replac
 
 ## 9. Recommendations for future work (if pursued)
 
-1. **Scale the v2.23 pilot under the same regression gate** (more contamination-guarded targeted
-   data and/or steps) to distinguish "needs more data" from a true capability ceiling — this is
-   the single most informative open question, and v2.23 showed it can be done safely.
+1. **Scale the v2.23 pilot — DONE (v2.23b).** The scaled run (data 49→94, steps 50→150, same
+   regression gate) converted no hard task and the aggregate dipped to 20.7 (one run at 18) → the
+   evidence favors a **capability ceiling**, not a data limit, for these three patterns at 1.5B;
+   more targeted training trades general performance without cracking them. The remaining
+   open levers are model-scale or a different task representation, not more of the same training.
 2. **Operation-aware / shorter memory records** for retrieval (the memory-record-format direction
    flagged since v2.19) — orthogonal to capability.
 3. **Keep the structured verifier in the default inference config** — it is the arc's largest
