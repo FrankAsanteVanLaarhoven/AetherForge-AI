@@ -1,0 +1,4 @@
+cohort,full32_mean,full32_runs,hard_conversions
+1.5B champion+verifier,22.0,"[23,23,20]",0
+3B base+verifier,26.33,"[26, 26, 27]",1
+3B adapter+verifier,29.00,"[29, 28, 30]",2

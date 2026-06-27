@@ -2714,6 +2714,92 @@ summarise-v223b:
 	@echo "v2.23b summary : $(V223B_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V223B_OUT_DIR)/claim_boundary.md"
 
+# ── v2.24 3B-Scale Capability Ceiling Test ────────────────────────────────
+# Tests whether ~2x model scale (1.5B -> 3B) moves the residual capability ceiling on the 3
+# hard tree tasks. Same strict protocol: v2.22 structured verifier + v2.19c retrieval, the
+# v2.23b contamination-guarded data, regression gate, with/without-verifier ablation. The
+# frozen 1.5B champion is untouched; this is a separate 3B base + adapter.
+#
+#   make eval-v224-base-hardtree-run1 (2,3) ; eval-v224-base-full32-run1 (2,3)
+#   make train-v224-3b-adapter
+#   make eval-v224-adapter-hardtree-run1 (2,3) ; eval-v224-adapter-full32-run1 (2,3)
+#   make eval-v224-adapter-noverifier-run1 (2,3) ; make summarise-v224
+
+V224_BASE     := Qwen/Qwen2.5-Coder-3B-Instruct
+V224_ADAPTER  := outputs/qwen3b_v224_tree_adapter/final
+V224_DATA     := $(V223B_DATA)
+V224_OUT_DIR  := results/v224_3b_scale_test
+
+.PHONY: train-v224-3b-adapter summarise-v224
+
+train-v224-3b-adapter:
+	@test -s $(V224_DATA) || (echo "ERROR: $(V224_DATA) missing — run make build-v223b-scaled-data" && exit 1)
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model $(V224_BASE) --training-file $(V224_DATA) \
+		--agent-contract strict \
+		--steps 150 --lr 1e-5 --batch-size 1 --grad-accum 8 --max-length 512 \
+		--output-dir outputs/qwen3b_v224_tree_adapter
+	@echo "v2.24 3B adapter trained: $(V224_ADAPTER) (1.5B champion untouched; max-length 512 for 16GB VRAM)"
+
+# common eval flags (verifier mode + v2.19c retrieval); $(1)=extra args
+_v224_common = --tasks-file $(V219_TASKS_32) \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+# 3B BASE (no adapter) under verifier mode
+define V224_BASE_RULE
+.PHONY: eval-v224-base-hardtree-run$(1) eval-v224-base-full32-run$(1)
+eval-v224-base-hardtree-run$(1):
+	@mkdir -p $(V224_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V224_BASE) \
+		$(_v224_common) --verifier-repair --max-repair-iters 3 \
+		--task-ids $(V223_HARDTREE) --output outputs/eval_v224_base_hardtree_run$(1)
+	@echo "v2.24 base hardtree run $(1) complete."
+eval-v224-base-full32-run$(1):
+	@mkdir -p $(V224_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V224_BASE) \
+		$(_v224_common) --verifier-repair --max-repair-iters 3 \
+		--output outputs/eval_v224_base_full32_run$(1)
+	@echo "v2.24 base full32 run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V224_BASE_RULE,$(n))))
+
+# 3B BASE + v2.24 adapter
+define V224_ADAPTER_RULE
+.PHONY: eval-v224-adapter-hardtree-run$(1) eval-v224-adapter-full32-run$(1) eval-v224-adapter-noverifier-run$(1)
+eval-v224-adapter-hardtree-run$(1):
+	@test -d $(V224_ADAPTER) || (echo "ERROR: adapter not found — run make train-v224-3b-adapter" && exit 1)
+	@mkdir -p $(V224_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V224_BASE) --hf-lora $(V224_ADAPTER) \
+		$(_v224_common) --verifier-repair --max-repair-iters 3 \
+		--task-ids $(V223_HARDTREE) --output outputs/eval_v224_adapter_hardtree_run$(1)
+	@echo "v2.24 adapter hardtree run $(1) complete."
+eval-v224-adapter-full32-run$(1):
+	@test -d $(V224_ADAPTER) || (echo "ERROR: adapter not found — run make train-v224-3b-adapter" && exit 1)
+	@mkdir -p $(V224_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V224_BASE) --hf-lora $(V224_ADAPTER) \
+		$(_v224_common) --verifier-repair --max-repair-iters 3 \
+		--output outputs/eval_v224_adapter_full32_run$(1)
+	@echo "v2.24 adapter full32 run $(1) complete."
+eval-v224-adapter-noverifier-run$(1):
+	@test -d $(V224_ADAPTER) || (echo "ERROR: adapter not found — run make train-v224-3b-adapter" && exit 1)
+	@mkdir -p $(V224_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V224_BASE) --hf-lora $(V224_ADAPTER) \
+		$(_v224_common) --execution-plan-mode \
+		--task-ids $(V223_HARDTREE) --output outputs/eval_v224_adapter_noverifier_run$(1)
+	@echo "v2.24 adapter no-verifier run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V224_ADAPTER_RULE,$(n))))
+
+summarise-v224:
+	@mkdir -p $(V224_OUT_DIR)
+	$(ENV) python scripts/summarise_v224_scale.py
+	@echo ""
+	@echo "v2.24 summary : $(V224_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V224_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 
