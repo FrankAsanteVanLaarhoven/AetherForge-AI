@@ -3075,12 +3075,45 @@ v231-gpu-runbook:
 test-v231:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v231_repair_sft.py -v
 
+# ── v2.32 Tool-Use Preservation During Repair-Trace Adaptation ───────────
+# Mixed repair + tool-use-preservation split-loss SFT pilot. Phase 1 (mixed dataset) runs anywhere;
+# train/eval/benchmark are GPU-gated and skip cleanly without CUDA (no fabricated metrics). Artifacts
+# local-only (data/generated/v232, outputs/v232_tool_use_preservation_sft, gitignored). Champion +
+# prior adapters never overwritten (separate output path).
+V232_OUT_DIR := results/v232_tool_use_preservation
+.PHONY: build-v232-mixed-dataset train-v232 eval-v232 summarise-v232 v232 v232-gpu-runbook test-v232
+
+build-v232-mixed-dataset:
+	$(ENV) python scripts/build_v232_mixed_dataset.py
+
+train-v232: build-v232-mixed-dataset
+	$(ENV) python scripts/train_v232_mixed_sft.py
+
+eval-v232:
+	$(ENV) python scripts/eval_v232_mixed_sft.py
+
+summarise-v232: build-v232-mixed-dataset
+	@mkdir -p $(V232_OUT_DIR)
+	$(ENV) python scripts/summarise_v232_mixed_sft.py
+	@echo ""
+	@echo "v2.32 summary : $(V232_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V232_OUT_DIR)/claim_boundary.md"
+
+v232: summarise-v232
+
+# End-to-end GPU runbook: build -> train -> eval -> benchmark gate -> summarise (refuses w/o CUDA).
+v232-gpu-runbook:
+	bash scripts/run_v232_gpu_runbook.sh
+
+test-v232:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v232_mixed_sft.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check

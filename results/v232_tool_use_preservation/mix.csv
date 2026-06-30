@@ -1,0 +1,13 @@
+dimension,key,count
+objective,repair,50
+objective,tool_use_preservation,32
+preservation_family,list_format,3
+preservation_family,kv_format,2
+preservation_family,container_format,3
+preservation_family,string_format,1
+preservation_family,json_format,1
+preservation_family,arithmetic,4
+preservation_family,recursion,2
+preservation_family,sequence,2
+preservation_family,scan,2
+preservation_family,tree_serialize_repr,12
