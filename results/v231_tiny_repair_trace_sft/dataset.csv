@@ -1,0 +1,15 @@
+dimension,key,count
+category,format_repair,28
+category,algorithmic_repair,22
+task_family,tree_serialize_repr,9
+task_family,list_format,6
+task_family,kv_format,4
+task_family,container_format,6
+task_family,string_format,2
+task_family,json_format,1
+task_family,arithmetic,8
+task_family,recursion,6
+task_family,sequence,2
+task_family,scan,6
+source,v229,9
+source,v230,41

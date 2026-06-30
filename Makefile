@@ -3038,12 +3038,41 @@ v230: summarise-v230
 test-v230:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v230_repair_harvest.py -v
 
+# ── v2.31 Tiny Repair-Trace SFT Pilot (first training milestone) ──────────
+# Phase 1 (dataset export) runs anywhere; Phase 2 (train) and Phase 3 (eval) are GPU-gated and skip
+# cleanly without a CUDA device (no fabricated metrics). All training artifacts are local-only
+# (data/generated/v231, outputs/v231_tiny_repair_trace_sft, gitignored). The frozen champion and
+# prior adapters are never overwritten (separate output path).
+V231_OUT_DIR := results/v231_tiny_repair_trace_sft
+.PHONY: build-v231-sft-dataset train-v231 eval-v231 summarise-v231 v231 test-v231
+
+build-v231-sft-dataset:
+	$(ENV) python scripts/build_v231_repair_sft_dataset.py
+
+train-v231: build-v231-sft-dataset
+	$(ENV) python scripts/train_v231_repair_sft.py
+
+eval-v231:
+	$(ENV) python scripts/eval_v231_repair_sft.py
+
+summarise-v231: build-v231-sft-dataset
+	@mkdir -p $(V231_OUT_DIR)
+	$(ENV) python scripts/summarise_v231_repair_sft.py
+	@echo ""
+	@echo "v2.31 summary : $(V231_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V231_OUT_DIR)/claim_boundary.md"
+
+v231: summarise-v231
+
+test-v231:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v231_repair_sft.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check

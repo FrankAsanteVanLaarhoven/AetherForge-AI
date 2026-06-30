@@ -57,6 +57,7 @@ results/*
 !results/v228_self_improving_dataset/
 !results/v229_repair_harvest/
 !results/v230_broadened_repair_harvest/
+!results/v231_tiny_repair_trace_sft/
 outputs/
 memory/index/
 memory/manifests/
