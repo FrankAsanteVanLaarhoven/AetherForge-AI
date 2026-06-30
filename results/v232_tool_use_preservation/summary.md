@@ -12,23 +12,24 @@ Mixes the genuine repair traces with tool-use / scaffold preservation traces (co
 
 ## Phase 2 — Split-loss training
 
-- **NOT RUN** — CPU-only environment; GPU-gated trainer skips cleanly (no fabricated metrics).
+- Base `Qwen/Qwen2.5-Coder-1.5B-Instruct` | max_steps 80 | loss trend [7.893016815185547, 7.870266723632812, 7.353997802734375, 5.8299201965332035, 6.040426635742188, 5.389043807983398, 4.167635345458985, 4.409267807006836, 3.8454971313476562, 3.5199024200439455, 2.5650157928466797, 3.11093807220459, 2.94683780670166, 2.3865228652954102, 2.6706329345703126, 2.8651355743408202] | mix {'repair': 50, 'preservation': 32}.
 
 ## Phase 3 — Evaluation
 
-- **NOT RUN** — GPU-gated (`scripts/eval_v232_mixed_sft.py`).
-- Benchmark gate: **NOT RUN** — required for PROMOTE: `python scripts/eval_v232_mixed_sft.py --benchmarks --base <base> --adapter outputs/v232_tool_use_preservation_sft/adapter`.
+- Repair: base 0/10 → adapter 2/10.
+- Tool-use preservation: adapter 0/7 (floor 80%).
+- Benchmark: champion 23 vs adapter 0; tree_serialize 3/3 preserved False.
 
 ## Decision
 
 | Gate | Status |
 |---|---|
-| training | PENDING |
-| repair_improved | PENDING |
-| tool_use_preserved | PENDING |
+| training | PASS |
+| repair_improved | PASS |
+| tool_use_preserved | FAIL |
 | artifact_safety | PASS |
-| benchmark_non_regression | PENDING |
+| benchmark_non_regression | FAIL |
 
-**HOLD** — not run in this environment (CPU-only, no CUDA). Mixed dataset is committed; the GPU-gated split-loss trainer / eval / benchmark harness is ready. No fabricated metrics.
+**HOLD** — gate(s) not satisfied: tool_use_preserved, benchmark_non_regression. Promotion requires all gates; no fabricated metrics.
 
 See `mix.csv`, `claim_boundary.md`.

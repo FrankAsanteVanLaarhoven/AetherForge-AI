@@ -7,8 +7,8 @@
 ## Status
 
 - Mixed dataset: DONE and committed (summary only; dataset local-only).
-- Training/eval: DEFERRED — CPU-only environment; GPU-gated scripts skip cleanly. No metrics fabricated.
-- Benchmark gate: NOT RUN — full promotion withheld until the 32-task eval completes.
+- Training/eval: DONE on a GPU host.
+- Benchmark gate: DONE.
 
 ## Not claimed
 
