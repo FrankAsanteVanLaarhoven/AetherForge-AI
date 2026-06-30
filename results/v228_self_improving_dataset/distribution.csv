@@ -1,0 +1,12 @@
+dimension,key,count
+representation,exact_string,8
+representation,token_list,5
+representation,nested_list,7
+representation,json,9
+task_family,tree_serialize_repr,29
+split,train_candidate,26
+split,rejected,43
+split,preference_candidate,3
+quality_score,0.6-0.8,22
+quality_score,0.8-1.0,4
+quality_score,0.4-0.6,3

@@ -2966,12 +2966,36 @@ v227: build-v227-traces summarise-v227
 test-v227:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py -v
 
+# ── v2.28 Self-Improving Trace Dataset ───────────────────────────────────
+# Dataset infrastructure (NOT training): normalises the local v2.26/v2.27 traces into one canonical,
+# contamination-guarded, quality-scored self-improvement dataset schema for LATER SFT / preference /
+# scaffold training. The generated dataset is local-only (data/generated/v228, gitignored); only the
+# curated summary under results/v228_self_improving_dataset is committed.
+V228_OUT_DIR := results/v228_self_improving_dataset
+.PHONY: build-v228-dataset summarise-v228 v228 test-v228
+
+build-v228-dataset:
+	$(ENV) python scripts/build_v228_self_improving_dataset.py
+
+summarise-v228: build-v228-dataset
+	@mkdir -p $(V228_OUT_DIR)
+	$(ENV) python scripts/summarise_v228_self_improving_dataset.py
+	@echo ""
+	@echo "v2.28 summary : $(V228_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V228_OUT_DIR)/claim_boundary.md"
+
+# Full v2.28 pipeline: local-only dataset -> curated summary.
+v228: summarise-v228
+
+test-v228:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v228_trace_schema.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
