@@ -3064,6 +3064,14 @@ summarise-v231: build-v231-sft-dataset
 
 v231: summarise-v231
 
+# End-to-end GPU runbook: export -> train 1.5B LoRA smoke -> eval -> summarise. Refuses without a
+# CUDA GPU; protects the champion + memory indexes (read-only tamper check); outputs stay local-only.
+#   make v231-gpu-runbook                       # defaults: 1.5B base, 60 steps
+#   bash scripts/run_v231_gpu_runbook.sh <base> <max_steps>
+.PHONY: v231-gpu-runbook
+v231-gpu-runbook:
+	bash scripts/run_v231_gpu_runbook.sh
+
 test-v231:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v231_repair_sft.py -v
 
