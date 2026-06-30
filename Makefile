@@ -2881,6 +2881,61 @@ summarise-v225:
 	@echo "v2.25 summary : $(V225_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V225_OUT_DIR)/claim_boundary.md"
 
+# ── v2.26 Self-Improving Trace Factory + tree_serialize Representation Attack ──
+# Part A: does tree_serialize fail because of brittle EXACT-STRING format or true
+# capability? The same 3 logical tree-serializations in 4 output representations
+# (exact_string/token_list/nested_list/json) are eval'd at 3B-bf16 (clean config) + verifier.
+# Part B: a source-only trace factory records full agentic repair trajectories (local-only).
+# Part C: trace-quality + format-vs-capability summariser. No held-out task is trained on.
+#
+#   make build-v226-representation-tasks
+#   make eval-v226-3b-run1 (2,3) ; [optional] eval-v226-7b-run1 (2,3)
+#   make build-v226-traces ; make summarise-v226
+
+V226_TASKS   := data/v226_representation_tasks.jsonl
+V226_3B      := Qwen/Qwen2.5-Coder-3B-Instruct
+V226_7B      := Qwen/Qwen2.5-Coder-7B-Instruct
+V226_OUT_DIR := results/v226_self_improving_traces
+
+.PHONY: build-v226-representation-tasks build-v226-traces summarise-v226
+
+build-v226-representation-tasks:
+	$(ENV) python scripts/build_v226_representation_tasks.py
+
+_v226_common = --tasks-file $(V226_TASKS) \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--verifier-repair --max-repair-iters 3 \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+define V226_RULE
+.PHONY: eval-v226-3b-run$(1) eval-v226-7b-run$(1)
+eval-v226-3b-run$(1):
+	@test -s $(V226_TASKS) || (echo "ERROR: run make build-v226-representation-tasks" && exit 1)
+	@mkdir -p $(V226_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V226_3B) \
+		$(_v226_common) --output outputs/eval_v226_3b_run$(1)
+	@echo "v2.26 3B-bf16 representation run $(1) complete."
+eval-v226-7b-run$(1):
+	@test -s $(V226_TASKS) || (echo "ERROR: run make build-v226-representation-tasks" && exit 1)
+	@mkdir -p $(V226_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V226_7B) --load-in-4bit \
+		$(_v226_common) --output outputs/eval_v226_7b_run$(1)
+	@echo "v2.26 7B-4bit (quantization-confounded) representation run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V226_RULE,$(n))))
+
+build-v226-traces:
+	$(ENV) python scripts/build_v226_trace_factory.py
+
+summarise-v226:
+	@mkdir -p $(V226_OUT_DIR)
+	$(ENV) python scripts/summarise_v226_tree_serialize.py
+	@echo ""
+	@echo "v2.26 summary : $(V226_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V226_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

@@ -35,6 +35,8 @@ models/
 
 # Generated local experiment artifacts
 data/agent_only_data.jsonl
+# v2.26 self-improving trace factory output (generated traces — not committed)
+data/generated/
 results/*
 !results/v212_manuscript_packet/
 !results/v217_dense_retrieval/
@@ -50,6 +52,7 @@ results/*
 !results/v223b_scaled_tree_capability/
 !results/v224_3b_scale_test/
 !results/v225_7b_scale_test/
+!results/v226_self_improving_traces/
 outputs/
 memory/index/
 memory/manifests/

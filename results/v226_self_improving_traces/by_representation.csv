@@ -1,0 +1,5 @@
+config,representation,pass,total,pass_rate
+3B-bf16,exact_string,3,9,0.33
+3B-bf16,token_list,7,9,0.78
+3B-bf16,nested_list,4,9,0.44
+3B-bf16,json,2,9,0.22
