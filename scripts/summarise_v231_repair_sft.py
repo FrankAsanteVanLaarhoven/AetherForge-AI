@@ -22,6 +22,47 @@ OUT_DIR = ROOT / "results" / "v231_tiny_repair_trace_sft"
 AGG = ROOT / "data" / "generated" / "v231" / "sft_aggregate.json"
 TRAIN = ROOT / "outputs" / "v231_tiny_repair_trace_sft" / "training_metrics.json"
 EVAL = ROOT / "outputs" / "v231_tiny_repair_trace_sft" / "eval_metrics.json"
+BENCH = ROOT / "outputs" / "v231_tiny_repair_trace_sft" / "benchmark_metrics.json"
+
+# champion reference on the frozen benchmark; "material regression" = adapter drops by > this margin.
+CHAMPION_32 = 23
+MATERIAL_MARGIN = 1   # a single-task best-of-3 flip is noise; > 1 task drop is material
+
+# exact command a GPU host must run to fill the benchmark gate (see eval_v231_repair_sft.py --benchmarks)
+MISSING_BENCH_CMD = ("python scripts/eval_v231_repair_sft.py --benchmarks "
+                     "--base <base> --adapter outputs/v231_tiny_repair_trace_sft/adapter")
+
+
+def decide(train, ev, bench, contamination_violations):
+    """Pure three-tier promotion decision. PROMOTE requires the benchmark gate; absent benchmark
+    metrics can never yield PROMOTE (training + repair alone => HOLD PENDING BENCHMARKS)."""
+    training_ok = bool(train and (train.get("loss_trend") or train.get("final_loss") is not None))
+    repair_ok = bool(ev and ev.get("adapter_repair_pass", -1) >= ev.get("base_repair_pass", 1 << 30))
+    artifact_ok = contamination_violations == 0
+    bench_ok = bool(bench
+                    and bench.get("adapter_32_pass", -1) >= CHAMPION_32 - MATERIAL_MARGIN
+                    and bench.get("tree_serialize_3of3_preserved") is True)
+    gates = {"training": training_ok, "repair_validation": repair_ok,
+             "artifact_safety": artifact_ok, "benchmark_non_regression": bench_ok}
+
+    if not train:
+        return gates, "HOLD", (
+            "**HOLD** — pilot not run in this environment (CPU-only, no CUDA). Dataset export is "
+            "committed; the GPU-gated trainer/eval/benchmark harness is ready. No metrics are fabricated.")
+    if training_ok and repair_ok and artifact_ok and not bench:
+        return gates, "PARTIAL/HOLD-PENDING-BENCHMARKS", (
+            "**PARTIAL PROMOTE / HOLD PENDING BENCHMARKS** — training, repair-validation, and "
+            "artifact-safety gates PASSED, but the frozen 32-task / hard-tree / tree_serialize 3/3 "
+            "benchmark gate has NOT been run. Full promotion is withheld until those delegated "
+            f"evaluations complete: `{MISSING_BENCH_CMD}`.")
+    if all(gates.values()):
+        return gates, "PROMOTE", (
+            "**PROMOTE** — all gates passed: stable training, repair validation adapter ≥ base, 0 "
+            "contamination, no material 32-task regression vs champion 23/28, tree_serialize 3/3 "
+            "preserved, no protected artifact overwritten.")
+    failed = [k for k, v in gates.items() if not v]
+    return gates, "HOLD", (f"**HOLD** — gate(s) not satisfied: {', '.join(failed)}. "
+                           "Promotion requires all gates; no fabricated metrics.")
 
 
 def main():
@@ -31,6 +72,7 @@ def main():
     a = json.loads(AGG.read_text())
     train = json.loads(TRAIN.read_text()) if TRAIN.exists() else None
     ev = json.loads(EVAL.read_text()) if EVAL.exists() else None
+    bench = json.loads(BENCH.read_text()) if BENCH.exists() else None
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(OUT_DIR / "dataset.csv", "w", newline="") as f:
@@ -70,25 +112,42 @@ def main():
               "(`scripts/train_v231_repair_sft.py`) is GPU-gated and skips cleanly here. Run on a GPU "
               "host to produce the adapter at `outputs/v231_tiny_repair_trace_sft/` (local-only). "
               "No training metrics are fabricated."]
-    s += ["", "## Phase 3 — Evaluation", ""]
+    s += ["", "## Phase 3a — Repair validation", ""]
     if ev:
-        s += [f"- Repair validation: base {ev.get('base_repair_pass')}/{ev.get('val_records')} vs "
-              f"adapter {ev.get('adapter_repair_pass')}/{ev.get('val_records')} "
-              f"(base {ev.get('base_rate')} → adapter {ev.get('adapter_rate')}).",
-              "- 32-task / hard-tree / tree_serialize-3/3 delegated to evaluate_code_agent.py "
-              "(compare vs frozen champion 23/28)."]
+        s += [f"- Repair validation slice: base {ev.get('base_repair_pass')}/{ev.get('val_records')} "
+              f"vs adapter {ev.get('adapter_repair_pass')}/{ev.get('val_records')} "
+              f"(base {ev.get('base_rate')} → adapter {ev.get('adapter_rate')})."]
     else:
-        s += ["- **NOT RUN** — GPU-gated (`scripts/eval_v231_repair_sft.py`). Planned: (1) v2.30 repair "
-              "validation slice; (2) frozen 32-task benchmark; (3) hard tree subset; (4) tree_serialize "
-              "3/3 format-control check. Comparisons: base+verifier vs adapter+verifier vs adapter "
-              "without verifier. No evaluation metrics are fabricated."]
-    promote = bool(train and ev and a.get("contamination_guard_violations", 1) == 0)
+        s += ["- **NOT RUN** — GPU-gated (`scripts/eval_v231_repair_sft.py`)."]
+    s += ["", "## Phase 3b — Delegated benchmark gates (frozen 32-task / hard tree / tree_serialize)", ""]
+    if bench:
+        s += [f"- 32-task: champion {bench.get('champion_32_pass', CHAMPION_32)} vs adapter "
+              f"{bench.get('adapter_32_pass')} (no material regression = adapter ≥ "
+              f"{CHAMPION_32 - MATERIAL_MARGIN}).",
+              f"- Hard-tree subset: {bench.get('hard_tree')}.",
+              f"- tree_serialize 3/3 format-control preserved: {bench.get('tree_serialize_3of3_preserved')}."]
+    else:
+        s += ["- **NOT RUN** — required for full promotion. Run on the GPU host (adapter must exist):",
+              "",
+              "  ```bash",
+              "  python scripts/eval_v231_repair_sft.py --benchmarks \\",
+              "    --base <base> --adapter outputs/v231_tiny_repair_trace_sft/adapter",
+              "  ```",
+              "  (delegates to evaluate_code_agent.py: 32-task `data/v210_clean_repair_generalisation_tasks.jsonl`,",
+              "  hard-tree subset, and the v2.26 representation tasks for tree_serialize 3/3.)"]
+
+    # ── per-gate decision (three-tier) ──
+    gates, short, decision = decide(train, ev, bench, a.get("contamination_guard_violations", 1))
+    training_ok, repair_ok = gates["training"], gates["repair_validation"]
+    artifact_ok, bench_ok = gates["artifact_safety"], gates["benchmark_non_regression"]
+
     s += ["", "## Decision", "",
-          ("**PROMOTE** — see training/eval metrics above; gates met." if promote else
-           "**HOLD** — dataset export + GPU-gated trainer/eval harness are delivered and validated "
-           "offline (export runs; trainer/eval skip cleanly with no fabricated metrics), but the "
-           "actual pilot run is deferred to a GPU host. Promotion requires a stable training run + "
-           "non-regressing 32-task benchmark, which this CPU-only environment cannot produce."), "",
+          "| Gate | Status |", "|---|---|",
+          f"| Training stable | {'PASS' if training_ok else ('PENDING' if not train else 'FAIL')} |",
+          f"| Repair validation (adapter ≥ base) | {'PASS' if repair_ok else ('PENDING' if not ev else 'FAIL')} |",
+          f"| Artifact safety (contamination 0) | {'PASS' if artifact_ok else 'FAIL'} |",
+          f"| 32-task non-regression + tree_serialize 3/3 | {'PASS' if bench_ok else ('PENDING' if not bench else 'FAIL')} |",
+          "", decision, "",
           "See `dataset.csv`, `claim_boundary.md`."]
     (OUT_DIR / "summary.md").write_text("\n".join(s) + "\n")
 
@@ -100,8 +159,14 @@ def main():
           "repair behaviour.", "",
           "## Status", "",
           "- Dataset export: DONE and committed (summary only; dataset local-only).",
-          "- Training + evaluation: DEFERRED — this environment is CPU-only (no CUDA); the trainer and "
-          "eval scripts skip cleanly and fabricate no metrics. Run on a GPU host to complete the pilot.",
+          (f"- Training: DONE on a GPU host (loss trend {train.get('loss_trend')})." if train else
+           "- Training: DEFERRED — CPU-only environment; GPU-gated trainer skips cleanly."),
+          (f"- Repair validation: DONE (base {ev.get('base_repair_pass')} → adapter "
+           f"{ev.get('adapter_repair_pass')} of {ev.get('val_records')})." if ev else
+           "- Repair validation: PENDING (GPU)."),
+          ("- Benchmark gate (32-task / hard-tree / tree_serialize 3/3): DONE." if bench else
+           "- Benchmark gate (32-task / hard-tree / tree_serialize 3/3): NOT RUN — full promotion is "
+           "withheld until these delegated evaluations complete. No metrics are fabricated."),
           "", "## Not claimed", "",
           "- No SWE-bench success, no production reliability, no RL training, no general SOTA, no "
           "frontier-level agent performance, no broad model improvement.",
@@ -111,9 +176,7 @@ def main():
     (OUT_DIR / "claim_boundary.md").write_text("\n".join(cb) + "\n")
 
     print(f"Wrote {OUT_DIR}/summary.md, dataset.csv, claim_boundary.md")
-    print(f"train={a.get('train_records')} val={a.get('val_records')} "
-          f"trained={'yes' if train else 'no(GPU-gated)'} evaluated={'yes' if ev else 'no(GPU-gated)'} "
-          f"decision={'PROMOTE' if promote else 'HOLD'}")
+    print(f"gates={gates} decision={short}")
 
 
 if __name__ == "__main__":

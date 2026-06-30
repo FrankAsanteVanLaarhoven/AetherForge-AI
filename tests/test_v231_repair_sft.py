@@ -11,6 +11,35 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.build_v231_repair_sft_dataset import _format_example  # noqa: E402
+from scripts.summarise_v231_repair_sft import decide  # noqa: E402
+
+_TRAIN = {"loss_trend": [1.8, 0.4], "final_loss": 0.4}
+_EVAL_UP = {"base_repair_pass": 0, "adapter_repair_pass": 3}
+_BENCH_OK = {"adapter_32_pass": 23, "tree_serialize_3of3_preserved": True}
+_BENCH_REGRESS = {"adapter_32_pass": 19, "tree_serialize_3of3_preserved": True}
+
+
+class TestPromotionGate(unittest.TestCase):
+    def test_no_promote_without_benchmark_gate(self):
+        # the exact bug: training + repair validation present, benchmark absent -> must NOT promote
+        _, short, _ = decide(_TRAIN, _EVAL_UP, None, 0)
+        self.assertEqual(short, "PARTIAL/HOLD-PENDING-BENCHMARKS")
+
+    def test_promote_only_when_all_gates_pass(self):
+        _, short, _ = decide(_TRAIN, _EVAL_UP, _BENCH_OK, 0)
+        self.assertEqual(short, "PROMOTE")
+
+    def test_benchmark_regression_holds(self):
+        _, short, _ = decide(_TRAIN, _EVAL_UP, _BENCH_REGRESS, 0)
+        self.assertEqual(short, "HOLD")
+
+    def test_contamination_blocks_promote(self):
+        _, short, _ = decide(_TRAIN, _EVAL_UP, _BENCH_OK, 1)
+        self.assertEqual(short, "HOLD")
+
+    def test_not_run_holds(self):
+        _, short, _ = decide(None, None, None, 0)
+        self.assertEqual(short, "HOLD")
 
 AGG = ROOT / "data" / "generated" / "v231" / "sft_aggregate.json"
 TRAIN_JSONL = ROOT / "data" / "generated" / "v231" / "sft_train.jsonl"

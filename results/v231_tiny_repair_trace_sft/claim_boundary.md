@@ -7,7 +7,9 @@
 ## Status
 
 - Dataset export: DONE and committed (summary only; dataset local-only).
-- Training + evaluation: DEFERRED — this environment is CPU-only (no CUDA); the trainer and eval scripts skip cleanly and fabricate no metrics. Run on a GPU host to complete the pilot.
+- Training: DEFERRED — CPU-only environment; GPU-gated trainer skips cleanly.
+- Repair validation: PENDING (GPU).
+- Benchmark gate (32-task / hard-tree / tree_serialize 3/3): NOT RUN — full promotion is withheld until these delegated evaluations complete. No metrics are fabricated.
 
 ## Not claimed
 

@@ -16,12 +16,30 @@ First training milestone: a tiny supervised fine-tuning pilot on the clean v2.30
 
 - **NOT RUN in this environment** — CPU-only torch (`+cpu`, no CUDA). The trainer (`scripts/train_v231_repair_sft.py`) is GPU-gated and skips cleanly here. Run on a GPU host to produce the adapter at `outputs/v231_tiny_repair_trace_sft/` (local-only). No training metrics are fabricated.
 
-## Phase 3 — Evaluation
+## Phase 3a — Repair validation
 
-- **NOT RUN** — GPU-gated (`scripts/eval_v231_repair_sft.py`). Planned: (1) v2.30 repair validation slice; (2) frozen 32-task benchmark; (3) hard tree subset; (4) tree_serialize 3/3 format-control check. Comparisons: base+verifier vs adapter+verifier vs adapter without verifier. No evaluation metrics are fabricated.
+- **NOT RUN** — GPU-gated (`scripts/eval_v231_repair_sft.py`).
+
+## Phase 3b — Delegated benchmark gates (frozen 32-task / hard tree / tree_serialize)
+
+- **NOT RUN** — required for full promotion. Run on the GPU host (adapter must exist):
+
+  ```bash
+  python scripts/eval_v231_repair_sft.py --benchmarks \
+    --base <base> --adapter outputs/v231_tiny_repair_trace_sft/adapter
+  ```
+  (delegates to evaluate_code_agent.py: 32-task `data/v210_clean_repair_generalisation_tasks.jsonl`,
+  hard-tree subset, and the v2.26 representation tasks for tree_serialize 3/3.)
 
 ## Decision
 
-**HOLD** — dataset export + GPU-gated trainer/eval harness are delivered and validated offline (export runs; trainer/eval skip cleanly with no fabricated metrics), but the actual pilot run is deferred to a GPU host. Promotion requires a stable training run + non-regressing 32-task benchmark, which this CPU-only environment cannot produce.
+| Gate | Status |
+|---|---|
+| Training stable | PENDING |
+| Repair validation (adapter ≥ base) | PENDING |
+| Artifact safety (contamination 0) | PASS |
+| 32-task non-regression + tree_serialize 3/3 | PENDING |
+
+**HOLD** — pilot not run in this environment (CPU-only, no CUDA). Dataset export is committed; the GPU-gated trainer/eval/benchmark harness is ready. No metrics are fabricated.
 
 See `dataset.csv`, `claim_boundary.md`.

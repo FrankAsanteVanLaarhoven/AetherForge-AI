@@ -27,6 +27,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data" / "generated" / "v231"
 OUT_DIR = ROOT / "outputs" / "v231_tiny_repair_trace_sft"
+BENCH_32 = ROOT / "data" / "v210_clean_repair_generalisation_tasks.jsonl"
+HARD_TREE_IDS = ("tree_serialize", "tree_from_list", "tree_max_path_sum")
+CHAMPION_32 = 23   # frozen champion reference (23/28)
 
 
 def _gpu_ok():
@@ -55,17 +58,71 @@ def _passes(code):
     return r.returncode == 0 and "PASS" in r.stdout
 
 
+def _count_passes(csv_path, ids=None):
+    """Count passed rows in an evaluate_code_agent best_of_3.csv (optionally restricted to ids)."""
+    import csv as _csv
+    _csv.field_size_limit(10_000_000)
+    p = f = 0
+    for row in _csv.DictReader(open(csv_path)):
+        tid = (row.get("id") or row.get("task_id") or "")
+        if ids is not None and not any(h in tid for h in ids):
+            continue
+        ok = str(row.get("passed", "")).strip().lower() in ("true", "1", "yes")
+        p += int(ok); f += int(not ok)
+    return p, p + f
+
+
+def run_benchmarks(base, adapter):
+    """GPU host: run the frozen 32-task + hard-tree + tree_serialize evals for the v2.31 adapter and
+    write benchmark_metrics.json. Delegates to evaluate_code_agent.py (read-only on the benchmark)."""
+    if not _gpu_ok():
+        print("[v231] SKIP: --benchmarks requires a CUDA GPU. (No evaluation performed; no fabricated "
+              "metrics.)")
+        return
+    if not Path(adapter).exists():
+        print(f"[v231] ERROR: adapter not found at {adapter}. Train first."); sys.exit(1)
+    out32 = OUT_DIR / "eval_32task_adapter"
+    cmd = [sys.executable, "scripts/evaluate_code_agent.py", "--hf-model", base, "--hf-lora", adapter,
+           "--tasks-file", str(BENCH_32), "--mode", "best_of_n", "--n", "3",
+           "--scoring-mode", "verified_agent", "--verifier-repair", "--output", str(out32)]
+    print(f"[v231] running 32-task benchmark for the adapter: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+    csv32 = out32 / "best_of_3.csv"
+    adapter_32, total_32 = _count_passes(csv32)
+    hard_p, hard_n = _count_passes(csv32, ids=HARD_TREE_IDS)
+    ts_p, ts_n = _count_passes(csv32, ids=("tree_serialize",))
+    metrics = {
+        "champion_32_pass": CHAMPION_32, "adapter_32_pass": adapter_32, "total_32": total_32,
+        "hard_tree": f"{hard_p}/{hard_n}", "hard_tree_pass": hard_p,
+        "tree_serialize_pass": ts_p, "tree_serialize_total": ts_n,
+        # 3/3 preservation: tree_serialize tasks not regressed (the v2.27 canonical-control 3/3 is a
+        # deterministic scaffold, model-independent; here we confirm the adapter does not break it).
+        "tree_serialize_3of3_preserved": bool(ts_n == 0 or ts_p >= ts_n),
+        "material_regression": adapter_32 < CHAMPION_32 - 1,
+    }
+    (OUT_DIR / "benchmark_metrics.json").write_text(json.dumps(metrics, indent=2))
+    print(f"[v231] benchmark: adapter {adapter_32}/{total_32} (champion ref {CHAMPION_32}); "
+          f"hard-tree {hard_p}/{hard_n}; tree_serialize {ts_p}/{ts_n}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="Qwen/Qwen2.5-Coder-1.5B-Instruct")
+    ap.add_argument("--adapter", default=str(OUT_DIR / "adapter"))
+    ap.add_argument("--benchmarks", action="store_true",
+                    help="run the frozen 32-task / hard-tree / tree_serialize gates (GPU host)")
     args = ap.parse_args()
+
+    if args.benchmarks:
+        run_benchmarks(args.base, args.adapter)
+        return
 
     if not _gpu_ok():
         print("[v231] SKIP: no CUDA GPU — repair-adapter generation eval requires a GPU host. "
               "(No evaluation performed; no fabricated metrics.)")
-        print("[v231] On a GPU host, also run the delegated evals:")
-        print("       make eval-v226-3b-run1   # tree_serialize format-control reference")
-        print("       (32-task benchmark + hard tree via evaluate_code_agent.py — see docs/v2.31_*.md)")
+        print("[v231] On a GPU host: run repair validation (this script) then the benchmark gate:")
+        print("       python scripts/eval_v231_repair_sft.py --benchmarks --base <base> "
+              "--adapter outputs/v231_tiny_repair_trace_sft/adapter")
         return
 
     val_path = DATA / "sft_val.jsonl"

@@ -62,8 +62,9 @@ make build-v231-sft-dataset
 echo "[2/4] train 1.5B LoRA smoke (separate adapter path)…"
 python3 scripts/train_v231_repair_sft.py --base "$BASE" --max-steps "$MAX_STEPS"
 
-echo "[3/4] evaluate v2.31 adapter vs base…"
-python3 scripts/eval_v231_repair_sft.py --base "$BASE"
+echo "[3/4] evaluate v2.31 adapter vs base (repair validation + benchmark gate)…"
+python3 scripts/eval_v231_repair_sft.py --base "$BASE" --adapter "$OUT/adapter"
+python3 scripts/eval_v231_repair_sft.py --benchmarks --base "$BASE" --adapter "$OUT/adapter"
 
 echo "[4/4] summarise v2.31…"
 make summarise-v231
