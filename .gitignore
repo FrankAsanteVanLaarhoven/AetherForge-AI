@@ -55,6 +55,7 @@ results/*
 !results/v226_self_improving_traces/
 !results/v227_format_robust/
 !results/v228_self_improving_dataset/
+!results/v229_repair_harvest/
 outputs/
 memory/index/
 memory/manifests/

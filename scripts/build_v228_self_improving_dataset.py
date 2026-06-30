@@ -37,8 +37,9 @@ from scripts.build_v227_trace_factory import (  # noqa: E402
 from scripts.v227_format_verifier import format_verify, render  # noqa: E402
 
 META_PATH = ROOT / "data" / "v226_representation_tasks.jsonl"
-SOURCES = [("v227", ROOT / "data/generated/v227/traces.jsonl"),
-           ("v226", ROOT / "data/generated/v226/traces.jsonl")]   # priority order
+SOURCES = [("v229", ROOT / "data/generated/v229/repair_traces.jsonl"),   # genuine format repairs
+           ("v227", ROOT / "data/generated/v227/traces.jsonl"),
+           ("v226", ROOT / "data/generated/v226/traces.jsonl")]   # priority order; missing = skipped
 OUT_DIR = ROOT / "data" / "generated" / "v228"
 
 CANONICAL_FIELDS = [

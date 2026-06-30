@@ -1,0 +1,6 @@
+failure_type,count
+extra_null_marker,2
+format_error,1
+missing_null_marker,1
+separator_error,1
+type_error,4

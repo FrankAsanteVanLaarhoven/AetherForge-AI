@@ -2990,12 +2990,37 @@ v228: summarise-v228
 test-v228:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v228_trace_schema.py -v
 
+# ── v2.29 Genuine Repair Trace Harvest ───────────────────────────────────
+# Trace harvest (NOT training): manufactures genuine execution-verified, verifier-labelled
+# FORMAT-repair transitions (candidate fail -> verifier signal -> canonical repair -> verified pass)
+# by perturbing ONLY the output format of known-correct serializers; held-out evaluation untouched.
+# Output is local-only (data/generated/v229, gitignored). Feeding the harvest through the v2.28
+# builder yields non-zero format-repair and verifier-format candidates.
+V229_OUT_DIR := results/v229_repair_harvest
+.PHONY: build-v229-harvest summarise-v229 v229 test-v229
+
+build-v229-harvest:
+	$(ENV) python scripts/build_v229_repair_harvest.py
+
+# Rebuild the v2.28 dataset (now picking up the v2.29 traces) then summarise the harvest evidence.
+summarise-v229: build-v229-harvest build-v228-dataset
+	@mkdir -p $(V229_OUT_DIR)
+	$(ENV) python scripts/summarise_v229_repair_harvest.py
+	@echo ""
+	@echo "v2.29 summary : $(V229_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V229_OUT_DIR)/claim_boundary.md"
+
+v229: summarise-v229
+
+test-v229:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v229_repair_harvest.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
