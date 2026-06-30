@@ -2936,6 +2936,43 @@ summarise-v226:
 	@echo "v2.26 summary : $(V226_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V226_OUT_DIR)/claim_boundary.md"
 
+# ── v2.27 Format-Robust Output Control ───────────────────────────────────
+# Evaluation + infrastructure milestone (NOT training): hardens the trace factory to record
+# genuine repair transitions, adds a deterministic tree-serialization format verifier, and tests
+# whether a canonical intermediate representation + structured format verification yields stable
+# tree_serialize conversion. All deterministic / model-free; the model baseline is mined from the
+# existing v2.26 transcripts. Generated traces are local-only (data/generated/v227, gitignored).
+V227_OUT_DIR := results/v227_format_robust
+.PHONY: v227-format-verifier build-v227-traces eval-v227-format-control summarise-v227 v227 test-v227
+
+v227-format-verifier:
+	$(ENV) python scripts/v227_format_verifier.py
+
+build-v227-traces:
+	$(ENV) python scripts/build_v227_trace_factory.py
+
+eval-v227-format-control:
+	@mkdir -p $(V227_OUT_DIR)
+	$(ENV) python scripts/v227_format_control_eval.py
+
+summarise-v227: eval-v227-format-control
+	@echo ""
+	@echo "v2.27 summary : $(V227_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V227_OUT_DIR)/claim_boundary.md"
+
+# Full v2.27 pipeline: hardened traces (local-only) -> format-control eval -> curated summary.
+v227: build-v227-traces summarise-v227
+
+test-v227:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py -v
+
+# ── Unit test suite ──────────────────────────────────────────────────────
+# Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
+# to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
+.PHONY: test
+test:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_heldout_tasks.py -v
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

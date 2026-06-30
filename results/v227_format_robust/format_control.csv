@@ -1,0 +1,5 @@
+representation,model_pass,model_total,model_rate,canonical_pass,canonical_total,canonical_rate
+exact_string,3,9,0.33,40,40,1.00
+token_list,7,9,0.78,40,40,1.00
+nested_list,4,9,0.44,40,40,1.00
+json,2,9,0.22,40,40,1.00

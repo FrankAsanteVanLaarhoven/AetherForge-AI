@@ -53,6 +53,7 @@ results/*
 !results/v224_3b_scale_test/
 !results/v225_7b_scale_test/
 !results/v226_self_improving_traces/
+!results/v227_format_robust/
 outputs/
 memory/index/
 memory/manifests/
