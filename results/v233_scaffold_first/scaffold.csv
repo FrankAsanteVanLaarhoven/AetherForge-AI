@@ -1,0 +1,12 @@
+dimension,key,count
+objective,tool_use_preservation,32
+task_family,list_format,3
+task_family,kv_format,2
+task_family,container_format,3
+task_family,string_format,1
+task_family,json_format,1
+task_family,arithmetic,4
+task_family,recursion,2
+task_family,sequence,2
+task_family,scan,2
+task_family,tree_serialize_repr,12

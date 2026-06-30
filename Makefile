@@ -3108,12 +3108,45 @@ v232-gpu-runbook:
 test-v232:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v232_mixed_sft.py -v
 
+# ── v2.33 Scaffold-First Tool-Call Preservation ──────────────────────────
+# Scaffold-only (no-repair) tool-call preservation SFT. Isolates the v2.31/v2.32 failure mode
+# (no_tool_call collapse): preserve execute_code/tool-use + the frozen 32-task benchmark BEFORE repair
+# traces return. Phase 1 (dataset) runs anywhere; train/eval/benchmark are GPU-gated and skip cleanly
+# without CUDA (no fabricated metrics). Artifacts local-only (data/generated/v233,
+# outputs/v233_scaffold_first_sft, gitignored). Champion + prior adapters never overwritten.
+V233_OUT_DIR := results/v233_scaffold_first
+.PHONY: build-v233-scaffold-dataset train-v233 eval-v233 summarise-v233 v233 v233-gpu-runbook test-v233
+
+build-v233-scaffold-dataset:
+	$(ENV) python scripts/build_v233_scaffold_dataset.py
+
+train-v233: build-v233-scaffold-dataset
+	$(ENV) python scripts/train_v233_scaffold_sft.py
+
+eval-v233:
+	$(ENV) python scripts/eval_v233_scaffold_sft.py
+
+summarise-v233: build-v233-scaffold-dataset
+	@mkdir -p $(V233_OUT_DIR)
+	$(ENV) python scripts/summarise_v233_scaffold_sft.py
+	@echo ""
+	@echo "v2.33 summary : $(V233_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V233_OUT_DIR)/claim_boundary.md"
+
+v233: summarise-v233
+
+v233-gpu-runbook:
+	bash scripts/run_v233_gpu_runbook.sh
+
+test-v233:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v233_scaffold_sft.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_v233_scaffold_sft.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check

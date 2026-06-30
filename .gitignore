@@ -59,6 +59,7 @@ results/*
 !results/v230_broadened_repair_harvest/
 !results/v231_tiny_repair_trace_sft/
 !results/v232_tool_use_preservation/
+!results/v233_scaffold_first/
 outputs/
 memory/index/
 memory/manifests/
