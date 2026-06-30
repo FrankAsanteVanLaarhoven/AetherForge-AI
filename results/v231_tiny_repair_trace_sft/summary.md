@@ -22,14 +22,9 @@ First training milestone: a tiny supervised fine-tuning pilot on the clean v2.30
 
 ## Phase 3b — Delegated benchmark gates (frozen 32-task / hard tree / tree_serialize)
 
-- **NOT RUN** — required for full promotion. Run on the GPU host (adapter must exist):
-
-  ```bash
-  python scripts/eval_v231_repair_sft.py --benchmarks \
-    --base <base> --adapter outputs/v231_tiny_repair_trace_sft/adapter
-  ```
-  (delegates to evaluate_code_agent.py: 32-task `data/v210_clean_repair_generalisation_tasks.jsonl`,
-  hard-tree subset, and the v2.26 representation tasks for tree_serialize 3/3.)
+- 32-task: champion 23 vs adapter 0 (no material regression = adapter ≥ 22).
+- Hard-tree subset: 0/3.
+- tree_serialize 3/3 format-control preserved: False.
 
 ## Decision
 
@@ -38,7 +33,7 @@ First training milestone: a tiny supervised fine-tuning pilot on the clean v2.30
 | Training stable | PENDING |
 | Repair validation (adapter ≥ base) | PENDING |
 | Artifact safety (contamination 0) | PASS |
-| 32-task non-regression + tree_serialize 3/3 | PENDING |
+| 32-task non-regression + tree_serialize 3/3 | FAIL |
 
 **HOLD** — pilot not run in this environment (CPU-only, no CUDA). Dataset export is committed; the GPU-gated trainer/eval/benchmark harness is ready. No metrics are fabricated.
 

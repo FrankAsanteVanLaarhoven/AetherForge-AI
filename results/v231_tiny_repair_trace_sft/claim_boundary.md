@@ -9,7 +9,7 @@
 - Dataset export: DONE and committed (summary only; dataset local-only).
 - Training: DEFERRED — CPU-only environment; GPU-gated trainer skips cleanly.
 - Repair validation: PENDING (GPU).
-- Benchmark gate (32-task / hard-tree / tree_serialize 3/3): NOT RUN — full promotion is withheld until these delegated evaluations complete. No metrics are fabricated.
+- Benchmark gate (32-task / hard-tree / tree_serialize 3/3): DONE.
 
 ## Not claimed
 
