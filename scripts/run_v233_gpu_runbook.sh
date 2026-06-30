@@ -15,6 +15,9 @@ ROOT="$(pwd)"
 BASE="${1:-Qwen/Qwen2.5-Coder-1.5B-Instruct}"
 MAX_STEPS="${2:-60}"
 OUT="outputs/v233_scaffold_first_sft"
+# Use the SAME Python environment as the Makefile targets ($(ENV)); plain python3 may resolve a
+# CPU-only torch and refuse incorrectly. Override with PYTHON_BIN if needed.
+PYTHON_BIN="${PYTHON_BIN:-conda run -n aetherforge-train python}"
 
 PROTECTED=(
   "outputs/qwen15b_memory_300steps/final"
@@ -25,11 +28,13 @@ PROTECTED=(
 
 echo "=== v2.33 GPU runbook (scaffold-first) ===  base=$BASE max_steps=$MAX_STEPS out=$OUT (local-only)"
 
-if ! python3 -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-  echo "REFUSING: no CUDA GPU available. Run on a GPU host. Nothing trained; no metrics produced."
-  exit 1
-fi
-echo "[gpu] CUDA available."
+$PYTHON_BIN - <<'PY'
+import torch
+if not torch.cuda.is_available():
+    raise SystemExit("REFUSING: no CUDA GPU available. This runbook must run on a GPU host. "
+                     "Nothing trained; no metrics produced.")
+print("[gpu] CUDA available:", torch.cuda.get_device_name(0))
+PY
 
 case "$OUT" in
   outputs/qwen15b_memory_300steps*|outputs/qwen3b*|outputs/qwen7b*|memory/*)
@@ -49,11 +54,11 @@ echo "[guard] protected-asset manifest hash: $BEFORE"
 echo "[1/5] build scaffold dataset (no repair; local-only)…"
 make build-v233-scaffold-dataset
 echo "[2/5] train scaffold adapter (separate path)…"
-python3 scripts/train_v233_scaffold_sft.py --base "$BASE" --max-steps "$MAX_STEPS"
+$PYTHON_BIN scripts/train_v233_scaffold_sft.py --base "$BASE" --max-steps "$MAX_STEPS"
 echo "[3/5] eval tool-use preservation…"
-python3 scripts/eval_v233_scaffold_sft.py --base "$BASE" --adapter "$OUT/adapter"
+$PYTHON_BIN scripts/eval_v233_scaffold_sft.py --base "$BASE" --adapter "$OUT/adapter"
 echo "[4/5] frozen 32-task benchmark gate (+ no_tool_call breakdown)…"
-python3 scripts/eval_v233_scaffold_sft.py --benchmarks --base "$BASE" --adapter "$OUT/adapter"
+$PYTHON_BIN scripts/eval_v233_scaffold_sft.py --benchmarks --base "$BASE" --adapter "$OUT/adapter"
 echo "[5/5] summarise v2.33…"
 make summarise-v233
 

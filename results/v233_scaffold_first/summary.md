@@ -11,23 +11,25 @@ Isolates scaffold/tool-call preservation. v2.31 (repair-only) and v2.32 (repair 
 
 ## Phase 2 — Scaffold-only training
 
-- **NOT RUN** — CPU-only; GPU-gated trainer skips cleanly (no fabricated metrics).
+- Base `Qwen/Qwen2.5-Coder-1.5B-Instruct` | scaffold-only | loss trend [8.061253356933594, 6.9368537902832035, 6.057427978515625, 6.019522476196289, 4.384450912475586, 3.6475990295410154, 3.386882019042969, 3.349059295654297, 2.5846675872802733, 2.3868051528930665, 2.713628578186035, 2.273435592651367].
 
 ## Phase 3 — Evaluation (scaffold-first)
 
-- Tool-use preservation: **NOT RUN** — GPU-gated.
-- Benchmark gate: **NOT RUN** — required for PROMOTE: `python scripts/eval_v233_scaffold_sft.py --benchmarks --base <base> --adapter outputs/v233_scaffold_first_sft/adapter`.
+- Tool-use preservation: 0/7 (rate 0.0; tool_call_rate 0.857).
+- 32-task: champion 23 vs adapter 5; tool_call_rate 0.188; execute_code_rate 0.188; no_tool_call 26 (dominant True).
+- Hard-tree 1/3; tree_serialize 3/3 preserved True.
+- Failure reasons: {'no_tool_call': 26, 'invalid_tool_json': 1}.
 
 ## Decision
 
 | Gate | Status |
 |---|---|
-| training | PENDING |
-| tool_use_preserved | PENDING |
+| training | PASS |
+| tool_use_preserved | FAIL |
 | artifact_safety | PASS |
-| benchmark_non_regression | PENDING |
+| benchmark_non_regression | FAIL |
 
-**HOLD** — not run in this environment (CPU-only, no CUDA). Scaffold dataset is committed; the GPU-gated trainer / eval / benchmark harness is ready. No fabricated metrics.
+**HOLD/REJECT** — gate(s) not satisfied: tool_use_preserved, benchmark_non_regression. no_tool_call is the dominant failure mode (the v2.31/v2.32 collapse persists). Scaffold preservation must hold before repair traces return.
 
 _Repair validation is an optional diagnostic only and is NOT a v2.33 promotion gate._
 

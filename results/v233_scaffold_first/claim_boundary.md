@@ -7,7 +7,7 @@
 ## Status
 
 - Scaffold dataset: DONE and committed (summary only; dataset local-only).
-- Training/eval/benchmark: DEFERRED — CPU-only; GPU-gated scripts skip cleanly. No metrics fabricated.
+- Training/eval/benchmark: DONE on a GPU host.
 
 ## Not claimed
 
