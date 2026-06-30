@@ -38,6 +38,7 @@ from scripts.v227_format_verifier import format_verify, render  # noqa: E402
 
 META_PATH = ROOT / "data" / "v226_representation_tasks.jsonl"
 SOURCES = [("v229", ROOT / "data/generated/v229/repair_traces.jsonl"),   # genuine format repairs
+           ("v230", ROOT / "data/generated/v230/repair_traces.jsonl"),   # broadened format + algo repairs
            ("v227", ROOT / "data/generated/v227/traces.jsonl"),
            ("v226", ROOT / "data/generated/v226/traces.jsonl")]   # priority order; missing = skipped
 OUT_DIR = ROOT / "data" / "generated" / "v228"
@@ -139,6 +140,13 @@ def main():
             repair_successful = differs and (not cand_verified) and final_verified
 
             vsig = _enrich_verifier(candidate, func, logical, representation, stored_status)
+            # prefer the source-stored failure_type when tree-only enrichment cannot classify
+            # (non-tree-serialize tasks, e.g. the v2.30 broadened/algorithmic harvest).
+            stored_v = t.get("verifier_signal") or {}
+            if not vsig.get("failure_type") and stored_v.get("failure_type"):
+                vsig["failure_type"] = stored_v["failure_type"]
+                vsig["diagnosis"] = vsig.get("diagnosis") or stored_v.get("diagnosis", "")
+                vsig["repair_hint"] = vsig.get("repair_hint") or stored_v.get("repair_hint")
             cg = _contamination_guard(tid, func, candidate, final, m, corpus)
             quality = _quality(
                 has_plan=t.get("trace_quality", {}).get("plan_present", bool(repair_plan)),
@@ -196,7 +204,9 @@ def main():
             if final_verified and quality["has_plan"]:
                 tags.append("sft")
             if repair_successful:
-                tags.append("format_repair")
+                # split by the (preferred) verifier failure_type: format-family vs algorithmic
+                tags.append("format_repair" if vsig.get("failure_type") in FORMAT_FAILURE_TYPES
+                            else "algorithmic_repair")
             if vsig.get("failure_type") in FORMAT_FAILURE_TYPES:
                 tags.append("verifier_format")
             rec["use_tags"] = tags
@@ -220,7 +230,7 @@ def main():
         if r["split"] == "rejected":
             continue
         tags = r["use_tags"]
-        if any(t in tags for t in ("sft", "format_repair", "verifier_format")):
+        if any(t in tags for t in ("sft", "format_repair", "algorithmic_repair", "verifier_format")):
             r["split"] = "train_candidate"
         elif "preference" in tags:
             r["split"] = "preference_candidate"
@@ -249,6 +259,7 @@ def main():
             "sft_candidate": use_counts.get("sft", 0),
             "preference_pair_candidate": use_counts.get("preference", 0),
             "format_repair_candidate": use_counts.get("format_repair", 0),
+            "algorithmic_repair_candidate": use_counts.get("algorithmic_repair", 0),
             "verifier_format_candidate": use_counts.get("verifier_format", 0),
         },
         "representation_distribution": dict(Counter(r["representation"] for r in accepted)),

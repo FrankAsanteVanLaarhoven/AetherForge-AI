@@ -3015,12 +3015,35 @@ v229: summarise-v229
 test-v229:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v229_repair_harvest.py -v
 
+# ── v2.30 Broadened Repair Trace Harvest ─────────────────────────────────
+# Trace harvest (NOT training): broadens the genuine repair corpus across more families and adds a
+# controlled algorithmic repair slice on NEW non-held-out tasks. Output is local-only
+# (data/generated/v230, gitignored). Feeding through the v2.28 builder yields non-zero format-repair
+# AND algorithmic-repair candidates.
+V230_OUT_DIR := results/v230_broadened_repair_harvest
+.PHONY: build-v230-harvest summarise-v230 v230 test-v230
+
+build-v230-harvest:
+	$(ENV) python scripts/build_v230_broadened_repair_harvest.py
+
+summarise-v230: build-v230-harvest build-v228-dataset
+	@mkdir -p $(V230_OUT_DIR)
+	$(ENV) python scripts/summarise_v230_broadened_repair_harvest.py
+	@echo ""
+	@echo "v2.30 summary : $(V230_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V230_OUT_DIR)/claim_boundary.md"
+
+v230: summarise-v230
+
+test-v230:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v230_repair_harvest.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
