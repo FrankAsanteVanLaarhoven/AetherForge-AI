@@ -7,6 +7,10 @@ preservation=configurable) and the trainer scales the per-example language-model
 Same stability-first constraints as v2.31 (small adapter, short max length, low LR, few steps),
 separate output path, champion never overwritten.
 
+Only tensor-safe fields (input_ids, attention_mask, labels, loss_weight) reach the collator/model;
+string metadata (objective, task_id, family, source, …) is stripped during tokenisation and again
+defensively in the collator, so the HF collator never tries to tensorise strings.
+
 GPU-gated: with no CUDA device (or missing deps) it prints a SKIP notice and exits 0 without training
 and without fabricating metrics. Run on a GPU host to produce outputs/v232_tool_use_preservation_sft/.
 
@@ -22,6 +26,45 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data" / "generated" / "v232"
 OUT_DIR = ROOT / "outputs" / "v232_tool_use_preservation_sft"   # LOCAL-ONLY, gitignored, separate path
+
+OBJECTIVE_ID = {"repair": 0, "tool_use_preservation": 1}
+# string/object metadata that must never reach the tensorising collator
+META_COLS = ["objective", "objective_id", "task_id", "task_family", "family", "category",
+             "source", "text", "prompt", "completion", "input", "output"]
+
+
+class WeightedDataCollator:
+    """Wraps a standard LM collator: pops per-example loss_weight, drops non-tensor metadata, then
+    re-attaches loss_weight as a float tensor. Keeps only tensor-safe fields for the model."""
+
+    def __init__(self, base_collator):
+        self.base_collator = base_collator
+
+    def __call__(self, features):
+        import torch
+        weights = [float(f.pop("loss_weight", 1.0)) for f in features]
+        for f in features:
+            for key in META_COLS:
+                f.pop(key, None)
+        batch = self.base_collator(features)
+        batch["loss_weight"] = torch.tensor(weights, dtype=torch.float32)
+        return batch
+
+
+def weighted_lm_loss(logits, labels, loss_weight):
+    """Per-example masked cross-entropy, weighted by loss_weight and renormalised."""
+    import torch
+    shift_logits = logits[..., :-1, :].contiguous()
+    shift_labels = labels[..., 1:].contiguous()
+    loss_fct = torch.nn.CrossEntropyLoss(reduction="none")
+    token_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)),
+                          shift_labels.view(-1)).view(shift_labels.shape)
+    mask = shift_labels.ne(-100)
+    per_example = (token_loss * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1)
+    if loss_weight is not None:
+        loss_weight = loss_weight.to(per_example.device)
+        return (per_example * loss_weight).sum() / loss_weight.sum().clamp_min(1e-8)
+    return per_example.mean()
 
 
 def _precheck():
@@ -75,32 +118,29 @@ def main():
     ds = load_dataset("json", data_files=str(train_path), split="train")
 
     def _tok(ex):
+        # tensor-safe fields only: input_ids, attention_mask, loss_weight (float); drop all strings.
         enc = tok(ex["input"] + "\n" + ex["output"] + tok.eos_token, truncation=True,
                   max_length=args.max_length, padding="max_length")
         enc["loss_weight"] = float(ex.get("loss_weight", 1.0))
-        enc["objective"] = ex.get("objective", "repair")
         return enc
 
-    ds = ds.map(_tok, remove_columns=ds.column_names)
+    ds = ds.map(_tok, remove_columns=ds.column_names)  # removes objective/task_family/source/... strings
 
     class SplitLossTrainer(Trainer):
-        """Scales each example's LM loss by its objective loss_weight (repair vs preservation)."""
         def compute_loss(self, model, inputs, return_outputs=False, **kw):
-            weights = inputs.pop("loss_weight", None)
-            inputs.pop("objective", None)
-            out = model(**inputs)
-            loss = out.loss
-            if weights is not None:
-                loss = loss * weights.to(loss.device).float().mean()
-            return (loss, out) if return_outputs else loss
+            loss_weight = inputs.pop("loss_weight", None)
+            outputs = model(**inputs)
+            loss = weighted_lm_loss(outputs.logits, inputs["labels"], loss_weight)
+            return (loss, outputs) if return_outputs else loss
 
+    base_collator = DataCollatorForLanguageModeling(tok, mlm=False)
     targs = TrainingArguments(
         output_dir=str(OUT_DIR / "checkpoints"), per_device_train_batch_size=1,
         gradient_accumulation_steps=4, learning_rate=args.lr, max_steps=args.max_steps,
         logging_steps=5, save_steps=args.max_steps, bf16=True, report_to=[],
         warmup_ratio=0.1, lr_scheduler_type="cosine", remove_unused_columns=False)
     trainer = SplitLossTrainer(model=model, args=targs, train_dataset=ds,
-                               data_collator=DataCollatorForLanguageModeling(tok, mlm=False))
+                               data_collator=WeightedDataCollator(base_collator))
     result = trainer.train()
     model.save_pretrained(str(OUT_DIR / "adapter"))
     tok.save_pretrained(str(OUT_DIR / "adapter"))

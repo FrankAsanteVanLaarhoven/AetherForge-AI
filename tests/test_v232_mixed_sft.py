@@ -13,6 +13,26 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.build_v232_mixed_dataset import _preservation_example  # noqa: E402
 from scripts.summarise_v232_mixed_sft import decide  # noqa: E402
+from scripts.train_v232_mixed_sft import WeightedDataCollator, weighted_lm_loss  # noqa: E402
+
+try:
+    import torch  # noqa: F401
+    _HAS_TORCH = True
+except Exception:
+    _HAS_TORCH = False
+
+
+def _strict_base(features):
+    """Emulates the HF collator crash: raises if any non-tensor-safe feature key remains."""
+    import torch
+    allowed = {"input_ids", "attention_mask"}
+    for f in features:
+        extra = set(f) - allowed
+        if extra:
+            raise ValueError(f"Unable to create tensor — excessive nesting / string features: {extra}")
+    return {"input_ids": torch.tensor([f["input_ids"] for f in features]),
+            "attention_mask": torch.tensor([f["attention_mask"] for f in features]),
+            "labels": torch.tensor([f["input_ids"] for f in features])}
 
 _TRAIN = {"loss_trend": [1.7, 0.5]}
 _EV_OK = {"base_repair_pass": 1, "adapter_repair_pass": 4, "val_preservation": 8,
@@ -58,6 +78,36 @@ class TestPromotionGate(unittest.TestCase):
 
     def test_contamination_blocks(self):
         self.assertEqual(decide(_TRAIN, _EV_OK, _BENCH_OK, 1)[1], "HOLD")
+
+
+@unittest.skipUnless(_HAS_TORCH, "torch required")
+class TestWeightedCollator(unittest.TestCase):
+    def _features(self):
+        # mixed batch with string metadata that previously crashed the collator
+        return [
+            {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1], "loss_weight": 1.0,
+             "objective": "repair", "task_id": "v229_x", "task_family": "tree", "source": "v231"},
+            {"input_ids": [4, 5, 6], "attention_mask": [1, 1, 1], "loss_weight": 0.5,
+             "objective": "tool_use_preservation", "family": "arithmetic", "text": "blah"},
+        ]
+
+    def test_collator_strips_string_metadata_and_keeps_weights(self):
+        batch = WeightedDataCollator(_strict_base)(self._features())  # must NOT raise
+        import torch
+        self.assertIn("loss_weight", batch)
+        self.assertTrue(torch.equal(batch["loss_weight"], torch.tensor([1.0, 0.5])))
+        for k in ("objective", "task_id", "task_family", "source", "text", "family"):
+            self.assertNotIn(k, batch)
+
+    def test_weighted_lm_loss_respects_weights(self):
+        import torch
+        torch.manual_seed(0)
+        logits = torch.randn(2, 4, 7)
+        labels = torch.randint(0, 7, (2, 4))
+        uniform = weighted_lm_loss(logits, labels, torch.tensor([1.0, 1.0]))
+        skewed = weighted_lm_loss(logits, labels, torch.tensor([1.0, 0.0]))  # only example 0
+        self.assertFalse(torch.isnan(uniform))
+        self.assertFalse(torch.equal(uniform, skewed))
 
 
 @unittest.skipUnless((ROOT / "data/generated/v232/mixed_aggregate.json").exists(),
