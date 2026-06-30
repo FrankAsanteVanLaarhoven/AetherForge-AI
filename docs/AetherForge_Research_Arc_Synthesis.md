@@ -122,10 +122,19 @@ configuration** candidate or an **additive adapter** — never a champion replac
 ## 9. Recommendations for future work (if pursued)
 
 1. **Scale the v2.23 pilot — DONE (v2.23b).** The scaled run (data 49→94, steps 50→150, same
-   regression gate) converted no hard task and the aggregate dipped to 20.7 (one run at 18) → the
-   evidence favors a **capability ceiling**, not a data limit, for these three patterns at 1.5B;
-   more targeted training trades general performance without cracking them. The remaining
-   open levers are model-scale or a different task representation, not more of the same training.
+   regression gate) converted no hard task and the aggregate dipped to 20.7 (one run at 18) → at
+   1.5B the wall is not data-limited; more targeted training trades general performance without
+   cracking it.
+1b. **Model scale — DONE (v2.24, v2.25) — the key reframe.** The "capability ceiling" was a
+   property of the 1.5B *class*, not the tasks. **1.5B→3B (bf16, clean):** the 3B base alone
+   converts `tree_from_list` (3/3) and reaches 26.3; the same contamination-guarded adapter that
+   did nothing at 1.5B converts a SECOND task (`tree_max_path_sum`) and reaches **29.0** — scale
+   made the model trainable for these patterns. **7B (4-bit, v2.25):** the QLoRA adapter reaches
+   **31.0/32 (highest+most stable in the arc)**, but a 4-bit-vs-bf16 confound (7B-4bit base 21.3 <
+   3B-bf16 26.3, forced by 16GB VRAM) prevents a clean like-for-like base comparison.
+   `tree_serialize` (exact string serialization) never converts at any scale (best 2/3) — the
+   deepest holdout. Open: a bf16 7B (needs >16GB), or a different task representation for
+   `tree_serialize`.
 2. **Operation-aware / shorter memory records** for retrieval (the memory-record-format direction
    flagged since v2.19) — orthogonal to capability.
 3. **Keep the structured verifier in the default inference config** — it is the arc's largest
