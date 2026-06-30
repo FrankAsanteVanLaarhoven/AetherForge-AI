@@ -1120,6 +1120,10 @@ def main():
     ap = argparse.ArgumentParser(description="Evaluate AetherForge Code Agent")
     ap.add_argument("--hf-model",     default="",  help="HF model ID or path")
     ap.add_argument("--hf-lora",      default="",  help="PEFT adapter path (optional)")
+    ap.add_argument("--load-in-4bit", action="store_true",
+                    help="Load the base model in 4-bit NF4 (bitsandbytes) so 7B-class models "
+                         "fit on 16GB VRAM. With a LoRA adapter the adapter stays applied "
+                         "(not merged) on the quantized base.")
     ap.add_argument("--mode",         default="single",
                     choices=["single", "best_of_n", "compare"],
                     help="single | best_of_n | compare (runs both and shows diff)")
@@ -1344,6 +1348,7 @@ def main():
     model, tokenizer = load_hf_model(
         args.hf_model,
         lora_path=args.hf_lora or None,
+        load_in_4bit=args.load_in_4bit,
     )
 
     all_run_results: list[tuple[str, list[dict]]] = []
@@ -1360,7 +1365,7 @@ def main():
         else:
             base_id = args.hf_model
         print(f"\n── Baseline: {base_id} (no adapter) ──")
-        base_model, base_tok = load_hf_model(base_id, lora_path=None)
+        base_model, base_tok = load_hf_model(base_id, lora_path=None, load_in_4bit=args.load_in_4bit)
         base_results = evaluate(base_model, base_tok, tasks, "single", 1,
                                 args.verbose, is_hf=True, scoring_mode=sm,
                                 system_prompt=eval_system_prompt,

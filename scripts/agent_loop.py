@@ -628,8 +628,13 @@ def generate_next(model, tokenizer, ids: list[int], max_new: int) -> str:
 # HuggingFace model path (fast path: Qwen2.5-0.5B-Instruct + optional LoRA)
 # ---------------------------------------------------------------------------
 
-def load_hf_model(model_name_or_path: str, lora_path: str = None):
-    """Load any HF CausalLM (+ optional PEFT LoRA adapter) for the agent loop."""
+def load_hf_model(model_name_or_path: str, lora_path: str = None, load_in_4bit: bool = False):
+    """Load any HF CausalLM (+ optional PEFT LoRA adapter) for the agent loop.
+
+    load_in_4bit: 4-bit NF4 quantization (bitsandbytes) so 7B-class models fit on 16GB VRAM.
+    A 4-bit base cannot be merge_and_unload'd, so with 4-bit + LoRA the adapter is kept applied
+    on the quantized base instead of merged.
+    """
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
     use_bf16 = DEVICE == "cuda" and torch.cuda.is_bf16_supported()
@@ -642,19 +647,25 @@ def load_hf_model(model_name_or_path: str, lora_path: str = None):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Loading model: {model_name_or_path}  (dtype={dtype})")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path,
-        dtype=dtype,
-        device_map=DEVICE,
-        trust_remote_code=False,
-    )
+    load_kwargs = dict(device_map="auto" if load_in_4bit else DEVICE, trust_remote_code=False)
+    if load_in_4bit:
+        from transformers import BitsAndBytesConfig
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=dtype, bnb_4bit_use_double_quant=True,
+        )
+    else:
+        load_kwargs["dtype"] = dtype
+
+    print(f"Loading model: {model_name_or_path}  ({'4bit-nf4' if load_in_4bit else dtype})")
+    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **load_kwargs)
 
     if lora_path:
         from peft import PeftModel
         print(f"Loading LoRA adapter: {lora_path}")
         model = PeftModel.from_pretrained(model, lora_path)
-        model = model.merge_and_unload()
+        if not load_in_4bit:
+            model = model.merge_and_unload()
 
     model.eval()
     return model, tokenizer

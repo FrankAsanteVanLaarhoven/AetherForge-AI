@@ -638,6 +638,9 @@ def main():
     parser.add_argument("--batch-size",      type=int,   default=2)
     parser.add_argument("--grad-accum",      type=int,   default=8)
     parser.add_argument("--max-length",      type=int,   default=1024)
+    parser.add_argument("--load-in-4bit",    action="store_true",
+                        help="QLoRA: load the base in 4-bit NF4 + gradient checkpointing so "
+                             "7B-class models train on 16GB VRAM.")
     parser.add_argument("--output-dir",      default="outputs/qwen_code_agent",
                         help="Base output dir; final model saved to <output-dir>/final")
     parser.add_argument("--agent-only",      action="store_true",
@@ -714,12 +717,22 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.hf_model,
-        dtype=torch.bfloat16,
-        device_map="auto",
-        trust_remote_code=True,
-    )
+    load_kwargs = dict(device_map="auto", trust_remote_code=True)
+    if getattr(args, "load_in_4bit", False):
+        from transformers import BitsAndBytesConfig
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True, bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
+        )
+        print("QLoRA: loading base in 4-bit NF4 (for 7B-class on 16GB VRAM)")
+    else:
+        load_kwargs["dtype"] = torch.bfloat16
+    model = AutoModelForCausalLM.from_pretrained(args.hf_model, **load_kwargs)
+
+    if getattr(args, "load_in_4bit", False):
+        from peft import prepare_model_for_kbit_training
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+        model.gradient_checkpointing_enable()
 
     lora_config = LoraConfig(
         r=16,

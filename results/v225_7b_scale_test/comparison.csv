@@ -1,0 +1,6 @@
+scale,cohort,full32_mean,hard_conversions
+1.5B,champion+verifier,22.0,0
+3B,base+verifier,26.3,1
+3B,adapter+verifier,29.0,2
+7B,base+verifier,21.33,1
+7B,adapter+verifier,31.00,1

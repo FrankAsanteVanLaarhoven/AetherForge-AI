@@ -2800,6 +2800,87 @@ summarise-v224:
 	@echo "v2.24 summary : $(V224_OUT_DIR)/summary.md"
 	@echo "Claim boundary: $(V224_OUT_DIR)/claim_boundary.md"
 
+# ── v2.25 7B-Scale Capability Test (QLoRA / 4-bit) ─────────────────────────
+# Extends the v2.24 scale curve to 7B (Qwen2.5-Coder-7B-Instruct) via 4-bit NF4 (fits 16GB).
+# Same strict protocol; tests whether the lone holdout (tree_serialize) cracks at 7B and how
+# the scale trend continues. 1.5B champion + 3B artifacts untouched.
+#
+#   make eval-v225-base-hardtree-run1 (2,3) ; eval-v225-base-full32-run1 (2,3)
+#   make train-v225-7b-adapter
+#   make eval-v225-adapter-hardtree-run1 (2,3) ; eval-v225-adapter-full32-run1 (2,3)
+#   make eval-v225-adapter-noverifier-run1 (2,3) ; make summarise-v225
+
+V225_BASE     := Qwen/Qwen2.5-Coder-7B-Instruct
+V225_ADAPTER  := outputs/qwen7b_v225_tree_adapter/final
+V225_OUT_DIR  := results/v225_7b_scale_test
+
+.PHONY: train-v225-7b-adapter summarise-v225
+
+train-v225-7b-adapter:
+	@test -s $(V224_DATA) || (echo "ERROR: $(V224_DATA) missing — run make build-v223b-scaled-data" && exit 1)
+	PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True $(ENV) python scripts/finetune_qwen_code_agent.py \
+		--hf-model $(V225_BASE) --training-file $(V224_DATA) \
+		--agent-contract strict --load-in-4bit \
+		--steps 150 --lr 1e-5 --batch-size 1 --grad-accum 8 --max-length 512 \
+		--output-dir outputs/qwen7b_v225_tree_adapter
+	@echo "v2.25 7B QLoRA adapter trained: $(V225_ADAPTER) (1.5B champion + 3B untouched)"
+
+_v225_common = --tasks-file $(V219_TASKS_32) --load-in-4bit \
+	--mode best_of_n --n 3 --scoring-mode verified_agent --agent-contract strict --stop-after-pass \
+	--memory-enabled --retrieval-mode structured \
+	--structured-index $(V221_INDEX) --dense-model $(V219_ENCODER) \
+	--rerank-top-n $(V219_RERANK_N) --memory-top-k 4 --verbose
+
+define V225_BASE_RULE
+.PHONY: eval-v225-base-hardtree-run$(1) eval-v225-base-full32-run$(1)
+eval-v225-base-hardtree-run$(1):
+	@mkdir -p $(V225_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V225_BASE) \
+		$(_v225_common) --verifier-repair --max-repair-iters 3 \
+		--task-ids $(V223_HARDTREE) --output outputs/eval_v225_base_hardtree_run$(1)
+	@echo "v2.25 base hardtree run $(1) complete."
+eval-v225-base-full32-run$(1):
+	@mkdir -p $(V225_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V225_BASE) \
+		$(_v225_common) --verifier-repair --max-repair-iters 3 \
+		--output outputs/eval_v225_base_full32_run$(1)
+	@echo "v2.25 base full32 run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V225_BASE_RULE,$(n))))
+
+define V225_ADAPTER_RULE
+.PHONY: eval-v225-adapter-hardtree-run$(1) eval-v225-adapter-full32-run$(1) eval-v225-adapter-noverifier-run$(1)
+eval-v225-adapter-hardtree-run$(1):
+	@test -d $(V225_ADAPTER) || (echo "ERROR: adapter not found — run make train-v225-7b-adapter" && exit 1)
+	@mkdir -p $(V225_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V225_BASE) --hf-lora $(V225_ADAPTER) \
+		$(_v225_common) --verifier-repair --max-repair-iters 3 \
+		--task-ids $(V223_HARDTREE) --output outputs/eval_v225_adapter_hardtree_run$(1)
+	@echo "v2.25 adapter hardtree run $(1) complete."
+eval-v225-adapter-full32-run$(1):
+	@test -d $(V225_ADAPTER) || (echo "ERROR: adapter not found — run make train-v225-7b-adapter" && exit 1)
+	@mkdir -p $(V225_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V225_BASE) --hf-lora $(V225_ADAPTER) \
+		$(_v225_common) --verifier-repair --max-repair-iters 3 \
+		--output outputs/eval_v225_adapter_full32_run$(1)
+	@echo "v2.25 adapter full32 run $(1) complete."
+eval-v225-adapter-noverifier-run$(1):
+	@test -d $(V225_ADAPTER) || (echo "ERROR: adapter not found — run make train-v225-7b-adapter" && exit 1)
+	@mkdir -p $(V225_OUT_DIR)
+	$$(ENV) python scripts/evaluate_code_agent.py --hf-model $(V225_BASE) --hf-lora $(V225_ADAPTER) \
+		$(_v225_common) --execution-plan-mode \
+		--task-ids $(V223_HARDTREE) --output outputs/eval_v225_adapter_noverifier_run$(1)
+	@echo "v2.25 adapter no-verifier run $(1) complete."
+endef
+$(foreach n,1 2 3,$(eval $(call V225_ADAPTER_RULE,$(n))))
+
+summarise-v225:
+	@mkdir -p $(V225_OUT_DIR)
+	$(ENV) python scripts/summarise_v225_scale.py
+	@echo ""
+	@echo "v2.25 summary : $(V225_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V225_OUT_DIR)/claim_boundary.md"
+
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
 

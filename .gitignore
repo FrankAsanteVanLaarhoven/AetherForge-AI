@@ -49,6 +49,7 @@ results/*
 !results/v223_tree_capability_adapter/
 !results/v223b_scaled_tree_capability/
 !results/v224_3b_scale_test/
+!results/v225_7b_scale_test/
 outputs/
 memory/index/
 memory/manifests/
