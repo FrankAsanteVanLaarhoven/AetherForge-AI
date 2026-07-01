@@ -60,6 +60,7 @@ results/*
 !results/v231_tiny_repair_trace_sft/
 !results/v232_tool_use_preservation/
 !results/v233_scaffold_first/
+!results/v234_tool_call_format_control/
 outputs/
 memory/index/
 memory/manifests/

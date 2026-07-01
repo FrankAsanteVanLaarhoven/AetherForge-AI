@@ -1,0 +1,10 @@
+arm,metric,value
+baseline,pass,5
+baseline,tool_call_rate,0.188
+baseline,no_tool_call,26
+controlled,pass,5
+controlled,tool_call_rate,0.969
+controlled,no_tool_call,1
+control,recovered_tool_calls,25
+control,recovered_passes,0
+control,unsafe_or_ambiguous_rejected,1

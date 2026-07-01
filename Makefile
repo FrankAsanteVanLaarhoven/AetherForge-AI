@@ -3141,12 +3141,39 @@ v233-gpu-runbook:
 test-v233:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v233_scaffold_sft.py -v
 
+# ── v2.34 Tool-Call Format Control ───────────────────────────────────────
+# Inference-time (NO training) deterministic tool-call format controller. Isolates the no_tool_call
+# collapse shared by v2.31/v2.32/v2.33: re-wraps the model's already-emitted code into the
+# execute_code schema (never invents code) and measures, offline, recovery over the v2.33 32-task
+# transcripts. Outputs local-only (outputs/v234_tool_call_format_control, gitignored). No GPU needed.
+V234_OUT_DIR := results/v234_tool_call_format_control
+.PHONY: eval-v234 summarise-v234 v234 v234-gpu-runbook test-v234
+
+eval-v234:
+	$(ENV) python scripts/eval_v234_tool_call_format_control.py
+
+summarise-v234: eval-v234
+	@mkdir -p $(V234_OUT_DIR)
+	$(ENV) python scripts/summarise_v234_tool_call_format_control.py
+	@echo ""
+	@echo "v2.34 summary : $(V234_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V234_OUT_DIR)/claim_boundary.md"
+
+v234: summarise-v234
+
+# Verify protected assets -> controlled eval -> summarise -> verify protected assets (offline).
+v234-gpu-runbook:
+	bash scripts/run_v234_runbook.sh
+
+test-v234:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v234_tool_call_format_control.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_v233_scaffold_sft.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_v233_scaffold_sft.py tests/test_v234_tool_call_format_control.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check
