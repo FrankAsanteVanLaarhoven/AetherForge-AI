@@ -3168,12 +3168,38 @@ v234-gpu-runbook:
 test-v234:
 	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v234_tool_call_format_control.py -v
 
+# ── v2.35 Solution-Body Generation After Tool-Call Recovery ──────────────
+# Inference-time (NO training). Strict solution-body verification against each task's REAL benchmark
+# assertions (never the model's print('PASS')); classifies why bodies fail (fake_pass / incomplete /
+# assertion_failure) after v2.34 tool-call recovery. Outputs local-only
+# (outputs/v235_solution_body_generation, gitignored). No GPU needed.
+V235_OUT_DIR := results/v235_solution_body_generation
+.PHONY: eval-v235 summarise-v235 v235 v235-gpu-runbook test-v235
+
+eval-v235:
+	$(ENV) python scripts/eval_v235_solution_body_generation.py
+
+summarise-v235: eval-v235
+	@mkdir -p $(V235_OUT_DIR)
+	$(ENV) python scripts/summarise_v235_solution_body_generation.py
+	@echo ""
+	@echo "v2.35 summary : $(V235_OUT_DIR)/summary.md"
+	@echo "Claim boundary: $(V235_OUT_DIR)/claim_boundary.md"
+
+v235: summarise-v235
+
+v235-gpu-runbook:
+	bash scripts/run_v235_runbook.sh
+
+test-v235:
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v235_solution_body_generation.py -v
+
 # ── Unit test suite ──────────────────────────────────────────────────────
 # Deterministic, dependency-light tests (no GPU / model / network). Plugin autoload is disabled
 # to avoid system pytest plugins (e.g. ROS launch_testing) polluting collection.
 .PHONY: test
 test:
-	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_v233_scaffold_sft.py tests/test_v234_tool_call_format_control.py tests/test_heldout_tasks.py -v
+	PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $(ENV) python -m pytest tests/test_v227_format_verifier.py tests/test_v228_trace_schema.py tests/test_v229_repair_harvest.py tests/test_v230_repair_harvest.py tests/test_v231_repair_sft.py tests/test_v232_mixed_sft.py tests/test_v233_scaffold_sft.py tests/test_v234_tool_call_format_control.py tests/test_v235_solution_body_generation.py tests/test_heldout_tasks.py -v
 
 # ── v2.14 Documentation, Attribution Audit, Notebook ─────────────────────
 .PHONY: audit-attribution render-readme-check notebook-smoke v214-docs-check

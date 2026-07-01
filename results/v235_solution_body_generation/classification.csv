@@ -1,0 +1,6 @@
+class,count
+incomplete_no_def,18
+strict_pass,5
+assertion_failure,7
+no_tool_call,1
+fake_pass,1

@@ -61,6 +61,7 @@ results/*
 !results/v232_tool_use_preservation/
 !results/v233_scaffold_first/
 !results/v234_tool_call_format_control/
+!results/v235_solution_body_generation/
 outputs/
 memory/index/
 memory/manifests/
